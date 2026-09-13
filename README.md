@@ -167,8 +167,8 @@ instances, or accepts `--sample 15` for the fixed benchmark set.
 
 The benchmark workflow evaluates merged and proposed solvers on the same 15
 instances on PRs. Its job summary and downloadable `solver-benchmark` artifact
-contain the table and GIFs. The PR comment contains only that table, and shows
-one inline GIF per instance for the proposed solver. GIFs are stored on the
+contain the table and GIFs. The PR comment contains only that table, with one
+inline GIF for every solver-instance result. GIFs are stored on the
 repository's `benchmark-assets` branch. The manual workflow can also include
 the large generated cases.
 Solvers with other languages can expose the same Python CLI wrapper, but their

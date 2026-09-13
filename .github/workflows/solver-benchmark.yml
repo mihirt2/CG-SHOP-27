@@ -52,7 +52,7 @@ jobs:
           if [ "$INCLUDE_LARGE" = true ]; then args+=(--large); fi
           candidate/src/utils/.venv/bin/python candidate/src/utils/eval-solver.py \
             merged/src/examples/test_instances1 "${args[@]}" \
-            --sample 15 --timeout 30 --animate --animate-solver-prefix candidate/ --output benchmark-results
+            --sample 15 --timeout 30 --animate --output benchmark-results
       - name: Job summary
         if: always()
         run: |
