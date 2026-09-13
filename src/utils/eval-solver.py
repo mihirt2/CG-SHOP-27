@@ -103,10 +103,11 @@ def run(command, timeout, log, cwd=None):
 
 
 def swept_area(instance, solution):
-    """Sum each cutter's full swept union, including outside-field coverage.
+    """Sum the footprint swept on every tour edge, including revisits.
 
-    Revisited cells count once per cutter, but overlap between cutters counts
-    once for each cutter. A stationary cutter includes its initial footprint.
+    Consecutive edges may overlap, and that overlap deliberately counts again.
+    Thus, following the same tour ten times incurs ten times its swept area.
+    A stationary cutter contributes its initial footprint.
     """
     import numpy as np
     from cgshop2027_pyutils.grid import CellSet, dilate, rasterize_ring
@@ -115,15 +116,17 @@ def swept_area(instance, solution):
     cutter = rasterize_ring(instance.cutter).translated(-cx, -cy)
     total = 0
     for tour in solution.tours:
-        x0, y0 = min(tour.x), min(tour.y)
-        mask = np.zeros((max(tour.y) - y0 + 1, max(tour.x) - x0 + 1), dtype=bool)
-        mask[tour.start[1] - y0, tour.start[0] - x0] = True
-        for (ax, ay), (bx, by) in tour.edges():
+        edges = list(tour.edges())
+        if not edges:
+            total += len(cutter)
+        for (ax, ay), (bx, by) in edges:
+            x0, y0 = min(ax, bx), min(ay, by)
+            mask = np.zeros((abs(by - ay) + 1, abs(bx - ax) + 1), dtype=bool)
             if ay == by:
                 mask[ay - y0, min(ax, bx) - x0:max(ax, bx) - x0 + 1] = True
             else:
                 mask[min(ay, by) - y0:max(ay, by) - y0 + 1, ax - x0] = True
-        total += len(dilate(CellSet(mask, (x0, y0)), cutter))
+            total += len(dilate(CellSet(mask, (x0, y0)), cutter))
     return total
 
 

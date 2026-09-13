@@ -132,14 +132,13 @@ are not committed.
 - The default solver benchmark uses 15 fixed instances spanning multiple field
   sizes and families. `BENCHMARK_INSTANCES` names the exact files, and
   `sample.json` records their UIDs and input hashes.
-- Coverage efficiency is **field area / sum of per-cutter swept areas**.
-  Only validated solutions are scored. The numerator excludes field holes.
-  Each cutter's swept area is the union of its footprint along its complete
-  route, including its initial placement and coverage outside the field.
-  Revisits by the same cutter count once. Overlap between different cutters
-  counts once per cutter. Valid solutions score between 0 and 1, including
-  stationary cutters. This measures coverage utilization, not travel economy.
-  Maximum route length remains the optimization objective and ranking metric.
+- Coverage efficiency is **field area / total swept area**. Only validated
+  solutions are scored, and the numerator excludes field holes. The total is
+  the sum of every cutter footprint swept along every tour edge, including
+  coverage outside the field. Overlap and revisits count every time they occur,
+  so repeating a tour makes the score smaller. Valid solutions score between
+  0 and 1, including stationary cutters. Maximum route length remains the
+  optimization objective and ranking metric.
 - Time is wall time for the solver command, including interpreter/uv startup and
   output writing. Memory is the largest sampled sum of RSS over its process tree
   at 20 ms intervals. Shared pages can be counted more than once and brief peaks
