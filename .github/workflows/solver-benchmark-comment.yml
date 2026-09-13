@@ -69,7 +69,6 @@ jobs:
               }
               for (const [i,r] of rows.entries()) {
                 r.imageUrl = null;
-                if (!String(r.solver).startsWith('candidate/')) continue;
                 if (typeof r.animation !== 'string' || !/^run-\d+\/animation\.gif$/.test(r.animation)) continue;
                 const file = `report-data/${r.animation}`;
                 if (!fs.existsSync(file) || fs.lstatSync(file).isSymbolicLink() || !fs.realpathSync(file).startsWith(fs.realpathSync('report-data') + '/')) continue;
