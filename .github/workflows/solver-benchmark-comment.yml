@@ -4,8 +4,12 @@ on:
     workflows: [Solver benchmark]
     types: [completed]
 permissions:
+  contents: write
   actions: read
   pull-requests: write
+concurrency:
+  group: benchmark-assets
+  cancel-in-progress: false
 jobs:
   comment:
     if: github.event.workflow_run.event == 'pull_request'
@@ -20,55 +24,87 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
       - uses: actions/github-script@v7
+        id: prepare
         with:
           script: |
             const fs = require('fs');
             const run = context.payload.workflow_run;
-            let prs = run.pull_requests;
+            let prs = run.pull_requests.filter(p => p.base.repo.id === context.payload.repository.id);
             if (prs.length === 0) {
               const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({...context.repo, commit_sha: run.head_sha});
               prs = associated.data.filter(p => p.head.sha === run.head_sha && p.base.repo.full_name === `${context.repo.owner}/${context.repo.repo}`);
             }
-            if (prs.length !== 1) return;
+            if (prs.length !== 1) {
+              core.notice(`Expected one PR in this repository, found ${prs.length}. No comment posted.`);
+              return;
+            }
             const pr = prs[0];
             const current = await github.rest.pulls.get({...context.repo, pull_number: pr.number});
             if (current.data.head.sha !== run.head_sha) return;
             const marker = '<!-- solver-benchmark -->';
-            let body = `${marker}\n### Solver benchmark\n[Run and downloadable animations](${run.html_url})\n\n`;
+            let body = `${marker}\n`;
             const path = 'report-data/results.json';
             if (fs.existsSync(path) && fs.statSync(path).size < 1000000) {
               const rows = JSON.parse(fs.readFileSync(path, 'utf8'));
               if (!Array.isArray(rows) || rows.length > 500) throw new Error('Invalid report size');
               const text = x => String(x ?? '').replace(/[^a-zA-Z0-9_ ./-]/g, '').slice(0, 120);
               const number = x => typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x.toFixed(3) : '-';
-              const best = new Map();
-              for (const r of rows) {
-                if (r.status === 'valid' && typeof r.max_len === 'number' && Number.isFinite(r.max_len) && r.max_len >= 0)
-                  best.set(r.instance, Math.min(best.get(r.instance) ?? Infinity, r.max_len));
+              const branch = 'benchmark-assets';
+              let previous;
+              try { previous = (await github.rest.git.getRef({...context.repo, ref:`heads/${branch}`})).data.object.sha; }
+              catch (e) { if (e.status !== 404) throw e; }
+              let tree = [];
+              if (previous) {
+                const commit = (await github.rest.git.getCommit({...context.repo, commit_sha:previous})).data;
+                tree = (await github.rest.git.getTree({...context.repo, tree_sha:commit.tree.sha, recursive:'1'})).data.tree;
               }
-              const groups = new Map();
-              for (const r of rows) {
-                const key = text(r.solver);
-                if (!groups.has(key)) groups.set(key, {name:key, count:0, valid:0, score:0});
-                const g = groups.get(key);
-                g.count++;
-                if (r.status === 'valid' && best.has(r.instance) && typeof r.max_len === 'number' && Number.isFinite(r.max_len) && r.max_len >= 0) {
-                  g.valid++;
-                  g.score += r.max_len === 0 ? 1 : best.get(r.instance) / r.max_len;
-                }
+              const prefix = `pr-${pr.number}/`;
+              const entries = [];
+              for (const entry of tree) {
+                if (!/^pr-\d+\/run-\d+\.gif$/.test(entry.path) || entry.path.startsWith(prefix)) continue;
+                const blob = (await github.rest.git.getBlob({...context.repo, file_sha:entry.sha})).data;
+                const bytes = Buffer.from(blob.content, 'base64');
+                if (bytes.length > 10000000 || !/^GIF8[79]a$/.test(bytes.subarray(0,6).toString())) continue;
+                entries.push({path:entry.path, mode:'100644', type:'blob', sha:entry.sha});
               }
-              body += '| Solver | Valid | Relative score |\n|---|---:|---:|\n';
-              for (const g of [...groups.values()].sort((a,b) => b.valid-a.valid || b.score/b.count-a.score/a.count))
-                body += `| ${g.name} | ${g.valid}/${g.count} | ${(g.score/g.count).toFixed(4)} |\n`;
-              body += '\nCoverage efficiency = field area / sum of per-cutter swept areas. Time is solver wall time. Memory is sampled process-tree RSS.\n\n';
-              body += '| Solver | Instance (UID) | Status | Efficiency | Max len | Time (s) | Memory (MiB) |\n|---|---|---|---:|---:|---:|---:|\n';
+              for (const [i,r] of rows.entries()) {
+                r.imageUrl = null;
+                if (!String(r.solver).startsWith('candidate/')) continue;
+                if (typeof r.animation !== 'string' || !/^run-\d+\/animation\.gif$/.test(r.animation)) continue;
+                const file = `report-data/${r.animation}`;
+                if (!fs.existsSync(file) || fs.lstatSync(file).isSymbolicLink() || !fs.realpathSync(file).startsWith(fs.realpathSync('report-data') + '/')) continue;
+                if (fs.statSync(file).size > 10000000) continue;
+                const bytes = fs.readFileSync(file);
+                if (!/^GIF8[79]a$/.test(bytes.subarray(0,6).toString())) continue;
+                const dest = `${prefix}run-${i}.gif`;
+                const blob = await github.rest.git.createBlob({...context.repo, content:bytes.toString('base64'), encoding:'base64'});
+                entries.push({path:dest, mode:'100644', type:'blob', sha:blob.data.sha});
+                r.imageUrl = `https://raw.githubusercontent.com/${context.repo.owner}/${context.repo.repo}/${branch}/${dest}?run=${run.id}`;
+              }
+              const newTree = await github.rest.git.createTree({...context.repo, tree:entries});
+              const commit = await github.rest.git.createCommit({...context.repo, message:`Benchmark GIFs for PR ${pr.number}`, tree:newTree.data.sha, parents:previous ? [previous] : []});
+              if (previous) await github.rest.git.updateRef({...context.repo, ref:`heads/${branch}`, sha:commit.data.sha});
+              else await github.rest.git.createRef({...context.repo, ref:`refs/heads/${branch}`, sha:commit.data.sha});
+              body += '| Solver | Instance (UID) | Status | Efficiency | Max len | Time (s) | Memory (MiB) | Animation |\n|---|---|---|---:|---:|---:|---:|---|\n';
               for (const r of rows.slice(0, 100))
-                body += `| ${text(r.solver)} | ${text(r.instance)} | ${text(r.status)} | ${number(r.efficiency)} | ${number(r.max_len)} | ${number(r.time_s)} | ${number(r.memory_mib)} |\n`;
-              body += '\nFull table and GIFs are in the run artifact. Results are produced by PR code and are advisory.\n';
+                body += `| ${text(r.solver)} | ${text(r.instance)} | ${text(r.status)} | ${number(r.efficiency)} | ${number(r.max_len)} | ${number(r.time_s)} | ${number(r.memory_mib)} | ${r.imageUrl ? `<img src="${r.imageUrl}" width="220" alt="Animation">` : '-'} |\n`;
+
             } else {
-              body += 'No complete report was produced. See the run logs.\n';
+              core.notice('No complete report available.');
+              return;
             }
-            const comments = await github.paginate(github.rest.issues.listComments, {...context.repo, issue_number: pr.number});
+            fs.writeFileSync('comment.json', JSON.stringify({number:pr.number, sha:run.head_sha, body}));
+            core.setOutput('ready', 'true');
+      - uses: actions/github-script@v7
+        if: steps.prepare.outputs.ready == 'true'
+        with:
+          script: |
+            const fs = require('fs');
+            const {number, sha, body} = JSON.parse(fs.readFileSync('comment.json', 'utf8'));
+            const current = await github.rest.pulls.get({...context.repo, pull_number:number});
+            if (current.data.head.sha !== sha) return;
+            const marker = '<!-- solver-benchmark -->';
+            const comments = await github.paginate(github.rest.issues.listComments, {...context.repo, issue_number:number});
             const old = comments.find(c => c.user.type === 'Bot' && c.body.startsWith(marker));
-            if (old) await github.rest.issues.updateComment({...context.repo, comment_id: old.id, body});
-            else await github.rest.issues.createComment({...context.repo, issue_number: pr.number, body});
+            if (old) await github.rest.issues.updateComment({...context.repo, comment_id:old.id, body});
+            else await github.rest.issues.createComment({...context.repo, issue_number:number, body});
