@@ -185,6 +185,7 @@ def main():
     parser.add_argument('--validation-timeout', type=float, default=60)
     parser.add_argument('--animation-timeout', type=float, default=120)
     parser.add_argument('--animate', action='store_true')
+    parser.add_argument('--animate-solver-prefix', help='Only animate solvers whose label starts with this prefix')
     parser.add_argument('--large', action='store_true', help='Also generate square stress cases of side 256, 1024, and 4096')
     parser.add_argument('--output', type=Path, default=Path('benchmark-results'))
     args = parser.parse_args()
@@ -281,7 +282,7 @@ def main():
                             denom = result['swept_area']
                             row['swept_area'] = denom
                             row['efficiency'] = row['area'] / denom if denom else None
-                            if args.animate:
+                            if args.animate and (args.animate_solver_prefix is None or solver.startswith(args.animate_solver_prefix)):
                                 gif = directory / 'animation.gif'
                                 animation = run([sys.executable, script, '--animate', str(source.resolve()), str(solution), str(gif)], args.animation_timeout, directory / 'animation.log')
                                 row['animation_status'] = animation['status']
