@@ -180,6 +180,12 @@ def main():
     parser.add_argument('instances', type=Path)
     parser.add_argument('solutions', nargs='?', type=Path, help='Validate saved solutions, with no solver timing')
     parser.add_argument('--solver-root', action='append', default=[], metavar='LABEL=PATH')
+    parser.add_argument('--solver', action='append', default=[], metavar='NAME',
+                        help='Evaluate only these solver directory names (repeatable)')
+    parser.add_argument('--prior-results', type=Path,
+                        help='JSON rows to include in the report before new measurements')
+    parser.add_argument('--write-manifest', type=Path,
+                        help='Write the selected instance manifest and exit')
     parser.add_argument('--sample', type=int, default=None, help='Size-stratified sample count, or 0 for all examples')
     parser.add_argument('--timeout', type=float, default=30)
     parser.add_argument('--validation-timeout', type=float, default=60)
@@ -205,12 +211,21 @@ def main():
         paths = sample(list(args.instances.glob('*.instance.json')), args.sample)
     if not paths:
         parser.error('No instances found')
+    manifest = [{'uid': json.loads(p.read_text())['instance_uid'], 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in paths]
+    if args.write_manifest:
+        args.write_manifest.write_text(json.dumps(manifest, indent=2) + '\n')
+        return 0
     solvers = []
+    requested = set(args.solver)
     for entry in args.solver_root:
         label, root = entry.split('=', 1)
         for folder in sorted(Path(root).resolve().iterdir()):
-            if (folder / 'main.py').is_file() and (folder / 'pyproject.toml').is_file():
+            if (folder / 'main.py').is_file() and (folder / 'pyproject.toml').is_file() and (not requested or folder.name in requested):
                 solvers.append((f'{label}/{folder.name}', folder))
+    found = {folder.name for _, folder in solvers if folder}
+    missing_solvers = requested - found
+    if missing_solvers:
+        parser.error('Requested solver directories not found: ' + ', '.join(sorted(missing_solvers)))
     if args.solutions:
         solvers.append(('saved-solutions', None))
     if not solvers:
@@ -224,7 +239,6 @@ def main():
             path = out / f'{uid}.instance.json'
             path.write_text(json.dumps(data))
             paths.append(path)
-    manifest = [{'uid': json.loads(p.read_text())['instance_uid'], 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in paths]
     (out / 'sample.json').write_text(json.dumps(manifest, indent=2))
     def revision(folder):
         result = subprocess.run(['git', '-C', str(folder), 'rev-parse', 'HEAD'], capture_output=True, text=True)
@@ -236,6 +250,13 @@ def main():
                               for name, folder in solvers]}
     (out / 'environment.json').write_text(json.dumps(provenance, indent=2))
     rows = []
+    if args.prior_results:
+        try:
+            rows = json.loads(args.prior_results.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            parser.error(f'Cannot read --prior-results: {error}')
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            parser.error('--prior-results must contain a JSON list of result rows')
     if args.solutions and args.sample == 0:
         expected = {p.name.replace('.instance.json', '.solution.json') for p in paths}
         for extra in sorted(args.solutions.glob('*.solution.json')):

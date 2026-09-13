@@ -4,13 +4,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      large:
-        description: Include generated large stress instances
-        type: boolean
-        default: false
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: benchmark-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -28,56 +23,128 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: merged
           persist-credentials: false
-      - name: Check whether a solver changed
-        id: solver-diff
-        shell: bash
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
-            echo "compare=false" >> "$GITHUB_OUTPUT"
-          elif diff -qr --exclude=.venv candidate/src/solver merged/src/solver >/dev/null; then
-            echo "compare=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "compare=true" >> "$GITHUB_OUTPUT"
-          fi
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.12.10'
           enable-cache: false
-      - name: Install locked environments outside measured runs
+      - name: Install benchmark utilities
+        run: uv sync --frozen --project candidate/src/utils
+      - name: Create the fixed-instance manifest
         run: |
-          uv sync --frozen --project candidate/src/utils
-          projects=(candidate/src/solver/*)
-          if [ "${{ steps.solver-diff.outputs.compare }}" = "true" ]; then
-            projects+=(merged/src/solver/*)
-          fi
-          for project in "${projects[@]}"; do
-            if [ -f "$project/main.py" ] && [ -f "$project/pyproject.toml" ]; then
-              uv sync --frozen --project "$project"
-            fi
-          done
-      - name: Evaluate proposed solver and, when changed, its merged baseline
-        env:
-          INCLUDE_LARGE: ${{ inputs.large || false }}
-          COMPARE_SOLVERS: ${{ steps.solver-diff.outputs.compare }}
-        run: |
-          args=(--solver-root candidate=candidate/src/solver)
-          if [ "$COMPARE_SOLVERS" = "true" ]; then
-            args+=(--solver-root merged=merged/src/solver)
-          fi
-          if [ "$INCLUDE_LARGE" = true ]; then args+=(--large); fi
           candidate/src/utils/.venv/bin/python candidate/src/utils/eval-solver.py \
-            merged/src/examples/test_instances1 "${args[@]}" \
-            --sample 15 --timeout 30 --animate --output benchmark-results
-      - name: Job summary
-        if: always()
+            merged/src/examples/test_instances1 --sample 15 --write-manifest sample.json
+      - name: Find changed solver directories
+        id: changes
+        shell: bash
         run: |
-          if [ -f benchmark-results/report.md ]; then
-            cat benchmark-results/report.md >> "$GITHUB_STEP_SUMMARY"
+          : > changed.txt
+          : > removed.txt
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            declare -A names=()
+            for root in candidate/src/solver merged/src/solver; do
+              for folder in "$root"/*; do [ -d "$folder" ] && names["$(basename "$folder")"]=1; done
+            done
+            for name in "${!names[@]}"; do
+              if [ ! -d "candidate/src/solver/$name" ]; then
+                echo "$name" >> removed.txt
+              elif [ ! -d "merged/src/solver/$name" ] || ! diff -qr --exclude=.venv "candidate/src/solver/$name" "merged/src/solver/$name" >/dev/null; then
+                echo "$name" >> changed.txt
+              fi
+            done
+          else
+            for folder in candidate/src/solver/*; do
+              [ -f "$folder/main.py" ] && [ -f "$folder/pyproject.toml" ] && basename "$folder" >> changed.txt
+            done
           fi
+          sort -u -o changed.txt changed.txt
+          sort -u -o removed.txt removed.txt
+          echo "changed=$(paste -sd, changed.txt)" >> "$GITHUB_OUTPUT"
+          echo "removed=$(paste -sd, removed.txt)" >> "$GITHUB_OUTPUT"
+      - name: Download the merged benchmark cache
+        if: github.event_name == 'pull_request' && (steps.changes.outputs.changed != '' || steps.changes.outputs.removed != '')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const result = await github.rest.repos.getContent({...context.repo, path: 'baseline.json', ref: 'benchmark-baselines'});
+              fs.writeFileSync('baseline.json', Buffer.from(result.data.content, 'base64'));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              fs.writeFileSync('baseline.json', '{}');
+            }
+      - name: Select cached merged results
+        id: cache
+        if: github.event_name == 'pull_request' && (steps.changes.outputs.changed != '' || steps.changes.outputs.removed != '')
+        shell: bash
+        run: |
+          args=()
+          while IFS= read -r name; do [ -n "$name" ] && args+=(--solver "$name"); done < <(cat changed.txt removed.txt)
+          candidate/src/utils/.venv/bin/python candidate/src/utils/benchmark-baseline.py select \
+            --baseline baseline.json --sample sample.json --solver-root merged/src/solver \
+            "${args[@]}" --output baseline-selection.json
+          jq '.rows' baseline-selection.json > prior-results.json
+          jq -r '.missing[]' baseline-selection.json > missing.txt
+          echo "has-missing=$(jq -r '(.missing | length) > 0' baseline-selection.json)" >> "$GITHUB_OUTPUT"
+      - name: Install only solvers that will run
+        if: steps.changes.outputs.changed != '' || (github.event_name == 'pull_request' && steps.changes.outputs.removed != '')
+        shell: bash
+        run: |
+          declare -A projects=()
+          while IFS= read -r name; do [ -n "$name" ] && projects["candidate/src/solver/$name"]=1; done < changed.txt
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            while IFS= read -r name; do [ -n "$name" ] && projects["merged/src/solver/$name"]=1; done < missing.txt
+          fi
+          for project in "${!projects[@]}"; do
+            [ -f "$project/main.py" ] && [ -f "$project/pyproject.toml" ] && uv sync --frozen --project "$project"
+          done
+      - name: Measure cache misses from the merged revision
+        if: github.event_name == 'pull_request' && steps.cache.outputs.has-missing == 'true'
+        shell: bash
+        run: |
+          args=()
+          while IFS= read -r name; do [ -n "$name" ] && args+=(--solver "$name"); done < missing.txt
+          candidate/src/utils/.venv/bin/python candidate/src/utils/eval-solver.py \
+            merged/src/examples/test_instances1 --solver-root merged=merged/src/solver \
+            "${args[@]}" --sample 15 --timeout 30 --animate --prior-results prior-results.json --output merged-results
+          cp merged-results/results.json prior-results.json
+      - name: Measure changed proposed solvers
+        if: steps.changes.outputs.changed != ''
+        shell: bash
+        run: |
+          args=()
+          while IFS= read -r name; do [ -n "$name" ] && args+=(--solver "$name"); done < changed.txt
+          prior=()
+          [ -f prior-results.json ] && prior=(--prior-results prior-results.json)
+          candidate/src/utils/.venv/bin/python candidate/src/utils/eval-solver.py \
+            merged/src/examples/test_instances1 --solver-root candidate=candidate/src/solver \
+            "${args[@]}" --sample 15 --timeout 30 --animate "${prior[@]}" --output benchmark-results
+      - name: Write merged baseline cache
+        if: github.event_name != 'pull_request' && success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const {execFileSync} = require('child_process');
+            execFileSync('candidate/src/utils/.venv/bin/python', ['candidate/src/utils/benchmark-baseline.py', 'write', '--results', 'benchmark-results/results.json', '--sample', 'sample.json', '--solver-root', 'candidate/src/solver', '--output', 'baseline.json']);
+            const content = fs.readFileSync('baseline.json').toString('base64');
+            const branch = 'benchmark-baselines';
+            let previous;
+            try { previous = (await github.rest.git.getRef({...context.repo, ref:`heads/${branch}`})).data.object.sha; }
+            catch (error) { if (error.status !== 404) throw error; }
+            const blob = await github.rest.git.createBlob({...context.repo, content, encoding:'base64'});
+            let baseTree;
+            if (previous) baseTree = (await github.rest.git.getCommit({...context.repo, commit_sha:previous})).data.tree.sha;
+            const tree = await github.rest.git.createTree({...context.repo, base_tree: baseTree, tree:[{path:'baseline.json', mode:'100644', type:'blob', sha:blob.data.sha}]});
+            const commit = await github.rest.git.createCommit({...context.repo, message:'Update merged solver benchmark baseline', tree:tree.data.sha, parents:previous ? [previous] : []});
+            if (previous) await github.rest.git.updateRef({...context.repo, ref:`heads/${branch}`, sha:commit.data.sha});
+            else await github.rest.git.createRef({...context.repo, ref:`refs/heads/${branch}`, sha:commit.data.sha});
+      - name: Job summary
+        if: always() && hashFiles('benchmark-results/report.md') != ''
+        run: cat benchmark-results/report.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && hashFiles('benchmark-results/**') != ''
         with:
           name: solver-benchmark
           path: benchmark-results/
           retention-days: 30
-          if-no-files-found: warn
