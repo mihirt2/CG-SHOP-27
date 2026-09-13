@@ -28,6 +28,17 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: merged
           persist-credentials: false
+      - name: Check whether a solver changed
+        id: solver-diff
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "compare=false" >> "$GITHUB_OUTPUT"
+          elif diff -qr --exclude=.venv candidate/src/solver merged/src/solver >/dev/null; then
+            echo "compare=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "compare=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.12.10'
@@ -35,18 +46,22 @@ jobs:
       - name: Install locked environments outside measured runs
         run: |
           uv sync --frozen --project candidate/src/utils
-          for project in candidate/src/solver/* merged/src/solver/*; do
+          projects=(candidate/src/solver/*)
+          if [ "${{ steps.solver-diff.outputs.compare }}" = "true" ]; then
+            projects+=(merged/src/solver/*)
+          fi
+          for project in "${projects[@]}"; do
             if [ -f "$project/main.py" ] && [ -f "$project/pyproject.toml" ]; then
               uv sync --frozen --project "$project"
             fi
           done
-      - name: Evaluate the same sample for merged and proposed solvers
+      - name: Evaluate proposed solver and, when changed, its merged baseline
         env:
           INCLUDE_LARGE: ${{ inputs.large || false }}
-          IS_PR: ${{ github.event_name == 'pull_request' }}
+          COMPARE_SOLVERS: ${{ steps.solver-diff.outputs.compare }}
         run: |
           args=(--solver-root candidate=candidate/src/solver)
-          if [ "$IS_PR" = true ]; then
+          if [ "$COMPARE_SOLVERS" = "true" ]; then
             args+=(--solver-root merged=merged/src/solver)
           fi
           if [ "$INCLUDE_LARGE" = true ]; then args+=(--large); fi
