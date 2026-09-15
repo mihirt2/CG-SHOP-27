@@ -122,16 +122,16 @@ are excluded from the timings:
 ```sh
 uv sync --frozen --project src/utils
 uv sync --frozen --project src/solver/py-bounding-rect-solver
-uv run --no-sync --project src/utils python src/utils/eval-solver.py src/examples/test_instances1 --solver-root proposed=src/solver --sample 10 --timeout 30 --animate
+uv run --no-sync --project src/utils python src/utils/eval-solver.py src/examples/test_instances1 --solver-root proposed=src/solver --sample 15 --timeout 30 --animate
 ```
 
 Run these commands from the repository root. Open `benchmark-results/report.md`
-for the leaderboard and per-instance table. GIF links are relative to that
-report. Generated reports, logs, solutions, and animations are not committed.
+for the per-instance table. Generated reports, logs, solutions, and animations
+are not committed.
 
-- The default solver benchmark selects 10 deterministic instances across field
-  area ranges, preferring different instance families within each range.
-  `sample.json` records the selected UIDs and input hashes.
+- The default solver benchmark uses 15 fixed instances spanning multiple field
+  sizes and families. `BENCHMARK_INSTANCES` names the exact files, and
+  `sample.json` records their UIDs and input hashes.
 - Coverage efficiency is **field area / sum of per-cutter swept areas**.
   Only validated solutions are scored. The numerator excludes field holes.
   Each cutter's swept area is the union of its footprint along its complete
@@ -161,14 +161,16 @@ Install each checkout's solver environments first.
 
 The original `eval-solver.py INSTANCES SOLUTIONS` command still validates saved
 solutions, with no invented timing or memory measurements. It defaults to all
-instances, or accepts `--sample 10` for a sample.
+instances, or accepts `--sample 15` for the fixed benchmark set.
 
 ### PR reports
 
-The benchmark workflow evaluates merged and proposed solvers on the same 10
-instances on PRs, and refreshes the merged leaderboard on pushes to `main`.
-Its job summary and downloadable `solver-benchmark` artifact contain the report
-and GIFs. The manual workflow can also include the large generated cases.
+The benchmark workflow evaluates merged and proposed solvers on the same 15
+instances on PRs. Its job summary and downloadable `solver-benchmark` artifact
+contain the table and GIFs. The PR comment contains only that table, and shows
+one inline GIF per instance for the proposed solver. GIFs are stored on the
+repository's `benchmark-assets` branch. The manual workflow can also include
+the large generated cases.
 Solvers with other languages can expose the same Python CLI wrapper, but their
 build dependencies must be installed before evaluation.
 

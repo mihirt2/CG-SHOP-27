@@ -25,6 +25,24 @@ def area(data):
     return polygon(region['outer_boundary']) - sum(polygon(p) for p in region.get('inner_boundaries', []))
 
 
+BENCHMARK_INSTANCES = (
+    'srpg_11k_305_1d6.instance.json',
+    'fpg73_1k_1s2.instance.json',
+    'iso_725k_1813_3d6.instance.json',
+    'octa_3k_3k_1s2.instance.json',
+    'smr_275k_4k_3p.instance.json',
+    'fpg73_20k_1s2.instance.json',
+    'smr_89k_11k_3s4.instance.json',
+    'pla7k_15k_1p.instance.json',
+    'smr_1439_25k_2p.instance.json',
+    'smo_1639_26k_1l1.instance.json',
+    'xrh24k_30k_1p.instance.json',
+    'octa_25k_30k_3l1.instance.json',
+    'usa14k_75k_1p.instance.json',
+    'pla34k_75k_2p.instance.json',
+    'isoa_13m_98k_3l1.instance.json',
+)
+
 def sample(paths, count):
     """Deterministic size-stratified sample, preferring unseen instance families."""
     ordered = sorted(paths, key=lambda p: (area(json.loads(p.read_text())), p.name))
@@ -145,22 +163,14 @@ def report(rows, out):
         valid = [r for r in group if r['status'] == 'valid']
         score = sum(1 if r['max_len'] == 0 else best[r['instance']] / r['max_len'] for r in valid) / len(group)
         ranking.append((len(valid), score, solver, len(group)))
-    lines = ['# Solver benchmark', '',
-             'Coverage efficiency = field area / sum of per-cutter swept areas.',
-             'Only validated solutions receive a score. Each swept area includes the starting footprint and travel outside the field. Overlap between cutters is counted for each cutter.',
-             'Time is solver wall time. Memory is sampled peak process-tree RSS (20 ms), not an exact OS high-water mark.',
-             'Dependency installation, validation, and animation are excluded from solver measurements.', '',
-             '| Solver | Valid | Relative score |', '|---|---:|---:|']
-    for valid, score, solver, total in sorted(ranking, key=lambda r: (-r[0], -r[1], r[2])):
-        lines.append(f'| {cell(solver)} | {valid}/{total} | {score:.4f} |')
-    lines += ['', 'Relative score averages best valid length / solver length on this same sample. Failures score zero.', '',
-              '| Solver | Instance (UID) | Status | Efficiency | Max len | Time (s) | Memory (MiB) | Animation |',
-              '|---|---|---|---:|---:|---:|---:|---|']
+    (out / 'leaderboard.json').write_text(json.dumps(sorted(ranking, key=lambda r: (-r[0], -r[1], r[2])), indent=2))
+    lines = ['| Solver | Instance (UID) | Status | Efficiency | Max len | Time (s) | Memory (MiB) | Animation |',
+             '|---|---|---|---:|---:|---:|---:|---|']
     for r in rows:
         def number(key):
             v = r.get(key)
             return '—' if v is None else f'{v:.3f}'
-        animation = f"[GIF]({r['animation']})" if r.get('animation') else '—'
+        animation = f"![Animation]({r['animation']})" if r.get('animation') else '—'
         lines.append(f"| {cell(r['solver'])} | {cell(r['instance'])} | {cell(r['status'])} | {number('efficiency')} | {number('max_len')} | {number('time_s')} | {number('memory_mib')} | {animation} |")
     (out / 'report.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
@@ -179,13 +189,19 @@ def main():
     parser.add_argument('--output', type=Path, default=Path('benchmark-results'))
     args = parser.parse_args()
     if args.sample is None:
-        args.sample = 0 if args.solutions else 10
+        args.sample = 0 if args.solutions else 15
     if args.sample < 0 or min(args.timeout, args.validation_timeout, args.animation_timeout) <= 0:
         parser.error('Sample must be nonnegative and timeouts must be positive')
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     args.instances = args.instances.resolve()
-    paths = sample(list(args.instances.glob('*.instance.json')), args.sample)
+    if args.sample == 15 and not args.solutions:
+        paths = [args.instances / name for name in BENCHMARK_INSTANCES]
+        missing = [p.name for p in paths if not p.is_file()]
+        if missing:
+            parser.error('Missing fixed benchmark instances: ' + ', '.join(missing))
+    else:
+        paths = sample(list(args.instances.glob('*.instance.json')), args.sample)
     if not paths:
         parser.error('No instances found')
     solvers = []

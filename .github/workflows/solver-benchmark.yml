@@ -52,13 +52,12 @@ jobs:
           if [ "$INCLUDE_LARGE" = true ]; then args+=(--large); fi
           candidate/src/utils/.venv/bin/python candidate/src/utils/eval-solver.py \
             merged/src/examples/test_instances1 "${args[@]}" \
-            --sample 10 --timeout 30 --animate --output benchmark-results
+            --sample 15 --timeout 30 --animate --output benchmark-results
       - name: Job summary
         if: always()
         run: |
           if [ -f benchmark-results/report.md ]; then
             cat benchmark-results/report.md >> "$GITHUB_STEP_SUMMARY"
-            echo 'Download solver-benchmark to open the GIF links.' >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@v4
         if: always()
