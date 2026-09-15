@@ -169,9 +169,9 @@ instances. It reuses a verified baseline from the latest `main` benchmark when
 its solver fingerprint, instance manifest, evaluator, and configuration match.
 Otherwise it measures the relevant merged solver. Its job summary and
 downloadable `solver-benchmark` artifact contain the table and GIFs. The PR
-comment contains only that table, with one inline GIF for every solver-instance
-result. The bot labels the table with the tested commit SHA and a link to the
-workflow run. GIFs are publicly embedded from the repository's
+comment contains the table, the tested commit SHA, and a link to the workflow
+run, with one inline GIF for every solver-instance result. GIFs are publicly
+embedded from the repository's
 `benchmark-assets` branch.
 Solvers with other languages can expose the same Python CLI wrapper, but their
 build dependencies must be installed before evaluation.
