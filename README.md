@@ -170,15 +170,16 @@ its solver fingerprint, instance manifest, evaluator, and configuration match.
 Otherwise it measures the relevant merged solver. Its job summary and
 downloadable `solver-benchmark` artifact contain the table and GIFs. The PR
 comment contains only that table, with one inline GIF for every solver-instance
-result. GIFs are stored on the repository's `benchmark-assets` branch. The
-manual workflow can also include the large generated cases.
+result. The bot labels the table with the tested commit SHA and a link to the
+workflow run. GIFs are publicly embedded from the repository's
+`benchmark-assets` branch.
 Solvers with other languages can expose the same Python CLI wrapper, but their
 build dependencies must be installed before evaluation.
 
-A separate `workflow_run` workflow updates one PR comment with the table and
-artifact link. It must first be merged onto the default branch to run. It never
+A separate `workflow_run` workflow updates one PR comment with the table and a
+link to its workflow run. It must first be merged onto the default branch to run. It never
 executes downloaded code, and uses only bounded, sanitized JSON fields in the
 comment. Solver execution has a read-only token and no persisted checkout
 credentials. Fork workflows may need a maintainer's first-run approval.
 Reports are advisory because the PR can modify its own benchmark code.
-The GIFs are downloadable artifacts, not publicly hosted inline PR images.
+GIFs are copied to the public `benchmark-assets` branch for inline PR images.
