@@ -44,13 +44,16 @@ def write(args) -> None:
                 solver_rows.append(cached)
         if solver_rows:
             solvers[name] = {'fingerprint': digest, 'rows': solver_rows}
-    args.output.write_text(json.dumps({'schema_version': 1, 'sample': manifest, 'solvers': solvers}, indent=2) + '\n')
+    args.output.write_text(json.dumps({'schema_version': 2, 'cache_key': args.cache_key,
+                                       'sample': manifest, 'solvers': solvers}, indent=2) + '\n')
 
 
 def select(args) -> None:
     cache = read_json(args.baseline) if args.baseline.is_file() else {}
     current_sample = read_json(args.sample)
-    cached = cache.get('solvers', {}) if cache.get('sample') == current_sample else {}
+    cached = (cache.get('solvers', {})
+              if cache.get('schema_version') == 2 and cache.get('cache_key') == args.cache_key
+              and cache.get('sample') == current_sample else {})
     roots = solver_fingerprints(args.solver_root)
     rows, missing = [], []
     for name in args.solver:
@@ -70,6 +73,7 @@ def main() -> None:
     store.add_argument('--sample', type=Path, required=True)
     store.add_argument('--solver-root', type=Path, required=True)
     store.add_argument('--output', type=Path, required=True)
+    store.add_argument('--cache-key', required=True)
     store.set_defaults(func=write)
     retrieve = commands.add_parser('select')
     retrieve.add_argument('--baseline', type=Path, required=True)
@@ -77,6 +81,7 @@ def main() -> None:
     retrieve.add_argument('--solver-root', type=Path, required=True)
     retrieve.add_argument('--solver', action='append', required=True)
     retrieve.add_argument('--output', type=Path, required=True)
+    retrieve.add_argument('--cache-key', required=True)
     retrieve.set_defaults(func=select)
     args = parser.parse_args()
     args.func(args)

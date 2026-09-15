@@ -164,13 +164,14 @@ instances, or accepts `--sample 15` for the fixed benchmark set.
 
 ### PR reports
 
-The benchmark workflow always evaluates the proposed solvers on the fixed 15
-instances. When a PR changes files under `src/solver/`, it also evaluates the
-merged baseline on those same instances. Its job summary and downloadable
-`solver-benchmark` artifact contain the table and GIFs. The PR comment contains
-only that table, with one inline GIF for every solver-instance result. GIFs are
-stored on the repository's `benchmark-assets` branch. The manual workflow can
-also include the large generated cases.
+The benchmark workflow evaluates changed proposed solvers on the fixed 15
+instances. It reuses a verified baseline from the latest `main` benchmark when
+its solver fingerprint, instance manifest, evaluator, and configuration match.
+Otherwise it measures the relevant merged solver. Its job summary and
+downloadable `solver-benchmark` artifact contain the table and GIFs. The PR
+comment contains only that table, with one inline GIF for every solver-instance
+result. GIFs are stored on the repository's `benchmark-assets` branch. The
+manual workflow can also include the large generated cases.
 Solvers with other languages can expose the same Python CLI wrapper, but their
 build dependencies must be installed before evaluation.
 

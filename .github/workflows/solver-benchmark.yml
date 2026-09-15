@@ -5,7 +5,7 @@ on:
     branches: [main]
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: benchmark-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -33,6 +33,9 @@ jobs:
         run: |
           candidate/src/utils/.venv/bin/python candidate/src/utils/eval-solver.py \
             merged/src/examples/test_instances1 --sample 15 --write-manifest sample.json
+      - name: Compute benchmark cache key
+        run: |
+          sha256sum sample.json candidate/src/utils/eval-solver.py candidate/src/utils/benchmark-baseline.py .github/workflows/solver-benchmark.yml | sha256sum | cut -d' ' -f1 > cache-key.txt
       - name: Find changed solver directories
         id: changes
         shell: bash
@@ -62,17 +65,14 @@ jobs:
           echo "removed=$(paste -sd, removed.txt)" >> "$GITHUB_OUTPUT"
       - name: Download the merged benchmark cache
         if: github.event_name == 'pull_request' && (steps.changes.outputs.changed != '' || steps.changes.outputs.removed != '')
-        uses: actions/github-script@v7
+        uses: actions/cache/restore@v4
         with:
-          script: |
-            const fs = require('fs');
-            try {
-              const result = await github.rest.repos.getContent({...context.repo, path: 'baseline.json', ref: 'benchmark-baselines'});
-              fs.writeFileSync('baseline.json', Buffer.from(result.data.content, 'base64'));
-            } catch (error) {
-              if (error.status !== 404) throw error;
-              fs.writeFileSync('baseline.json', '{}');
-            }
+          path: baseline.json
+          key: benchmark-baseline-pr-${{ github.run_id }}
+          restore-keys: benchmark-baseline-
+      - name: Initialize a missing baseline cache
+        if: github.event_name == 'pull_request' && (steps.changes.outputs.changed != '' || steps.changes.outputs.removed != '')
+        run: test -f baseline.json || echo '{}' > baseline.json
       - name: Select cached merged results
         id: cache
         if: github.event_name == 'pull_request' && (steps.changes.outputs.changed != '' || steps.changes.outputs.removed != '')
@@ -82,10 +82,12 @@ jobs:
           while IFS= read -r name; do [ -n "$name" ] && args+=(--solver "$name"); done < <(cat changed.txt removed.txt)
           candidate/src/utils/.venv/bin/python candidate/src/utils/benchmark-baseline.py select \
             --baseline baseline.json --sample sample.json --solver-root merged/src/solver \
-            "${args[@]}" --output baseline-selection.json
+            "${args[@]}" --cache-key "$(cat cache-key.txt)" --output baseline-selection.json
           jq '.rows' baseline-selection.json > prior-results.json
-          jq -r '.missing[]' baseline-selection.json > missing.txt
-          echo "has-missing=$(jq -r '(.missing | length) > 0' baseline-selection.json)" >> "$GITHUB_OUTPUT"
+          jq -r '.missing[]' baseline-selection.json | while IFS= read -r name; do
+            [ -d "merged/src/solver/$name" ] && echo "$name"
+          done > missing.txt
+          echo "has-missing=$([ -s missing.txt ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - name: Install only solvers that will run
         if: steps.changes.outputs.changed != '' || (github.event_name == 'pull_request' && steps.changes.outputs.removed != '')
         shell: bash
@@ -119,26 +121,12 @@ jobs:
           candidate/src/utils/.venv/bin/python candidate/src/utils/eval-solver.py \
             merged/src/examples/test_instances1 --solver-root candidate=candidate/src/solver \
             "${args[@]}" --sample 15 --timeout 30 --animate "${prior[@]}" --output benchmark-results
-      - name: Write merged baseline cache
-        if: github.event_name != 'pull_request' && success()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const {execFileSync} = require('child_process');
-            execFileSync('candidate/src/utils/.venv/bin/python', ['candidate/src/utils/benchmark-baseline.py', 'write', '--results', 'benchmark-results/results.json', '--sample', 'sample.json', '--solver-root', 'candidate/src/solver', '--output', 'baseline.json']);
-            const content = fs.readFileSync('baseline.json').toString('base64');
-            const branch = 'benchmark-baselines';
-            let previous;
-            try { previous = (await github.rest.git.getRef({...context.repo, ref:`heads/${branch}`})).data.object.sha; }
-            catch (error) { if (error.status !== 404) throw error; }
-            const blob = await github.rest.git.createBlob({...context.repo, content, encoding:'base64'});
-            let baseTree;
-            if (previous) baseTree = (await github.rest.git.getCommit({...context.repo, commit_sha:previous})).data.tree.sha;
-            const tree = await github.rest.git.createTree({...context.repo, base_tree: baseTree, tree:[{path:'baseline.json', mode:'100644', type:'blob', sha:blob.data.sha}]});
-            const commit = await github.rest.git.createCommit({...context.repo, message:'Update merged solver benchmark baseline', tree:tree.data.sha, parents:previous ? [previous] : []});
-            if (previous) await github.rest.git.updateRef({...context.repo, ref:`heads/${branch}`, sha:commit.data.sha});
-            else await github.rest.git.createRef({...context.repo, ref:`refs/heads/${branch}`, sha:commit.data.sha});
+      - name: Write an empty or removed-only report
+        if: steps.changes.outputs.changed == ''
+        shell: bash
+        run: |
+          mkdir -p benchmark-results
+          if [ -f prior-results.json ]; then cp prior-results.json benchmark-results/results.json; else echo '[]' > benchmark-results/results.json; fi
       - name: Job summary
         if: always() && hashFiles('benchmark-results/report.md') != ''
         run: cat benchmark-results/report.md >> "$GITHUB_STEP_SUMMARY"
@@ -148,3 +136,34 @@ jobs:
           name: solver-benchmark
           path: benchmark-results/
           retention-days: 30
+  publish-baseline:
+    needs: benchmark
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.benchmark.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.10'
+          enable-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: solver-benchmark
+          path: benchmark-results
+      - name: Build and save the merged baseline cache
+        shell: bash
+        run: |
+          uv sync --frozen --project src/utils
+          sha256sum benchmark-results/sample.json src/utils/eval-solver.py src/utils/benchmark-baseline.py .github/workflows/solver-benchmark.yml | sha256sum | cut -d' ' -f1 > cache-key.txt
+          src/utils/.venv/bin/python src/utils/benchmark-baseline.py write \
+            --results benchmark-results/results.json --sample benchmark-results/sample.json \
+            --solver-root src/solver --cache-key "$(cat cache-key.txt)" --output baseline.json
+      - uses: actions/cache/save@v4
+        with:
+          path: baseline.json
+          key: benchmark-baseline-${{ github.sha }}

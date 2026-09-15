@@ -42,7 +42,7 @@ jobs:
             const current = await github.rest.pulls.get({...context.repo, pull_number: pr.number});
             if (current.data.head.sha !== run.head_sha) return;
             const marker = '<!-- solver-benchmark -->';
-            let body = `${marker}\n`;
+            let body = `${marker}\nBenchmark: [run ${run.id}](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${run.id}) at \`${run.head_sha}\`\n\n`;
             const path = 'report-data/results.json';
             if (fs.existsSync(path) && fs.statSync(path).size < 1000000) {
               const rows = JSON.parse(fs.readFileSync(path, 'utf8'));
@@ -88,9 +88,6 @@ jobs:
               for (const r of rows.slice(0, 100))
                 body += `| ${text(r.solver)} | ${text(r.instance)} | ${text(r.status)} | ${number(r.efficiency)} | ${number(r.max_len)} | ${number(r.time_s)} | ${number(r.memory_mib)} | ${r.imageUrl ? `<img src="${r.imageUrl}" width="220" alt="Animation">` : '-'} |\n`;
 
-            } else {
-              core.notice('No complete report available.');
-              return;
             }
             fs.writeFileSync('comment.json', JSON.stringify({number:pr.number, sha:run.head_sha, body}));
             core.setOutput('ready', 'true');
