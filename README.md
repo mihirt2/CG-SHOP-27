@@ -139,13 +139,11 @@ are not committed.
   so repeating a tour makes the score smaller. Valid solutions score between
   0 and 1, including stationary cutters. Maximum route length remains the
   optimization objective and ranking metric.
-- Time and memory are measured by BenchExec for the complete solver process
-  tree, including interpreter/uv startup and output writing. The benchmark
-  workflow runs on Linux because BenchExec relies on Linux cgroups for reliable
-  process-tree resource accounting. Validation and GIF generation have separate
-  timeouts and are excluded from both measurements.
-- Local non-Linux runs retain wall-time enforcement, but show memory as
-  unavailable rather than publishing a less reliable process-tree estimate.
+- Time and memory include interpreter/uv startup and output writing. On Linux
+  runners with cgroups, BenchExec measures the complete solver process tree;
+  otherwise the evaluator uses psutil to sample the process tree at 20 ms
+  intervals. Validation and GIF generation have separate timeouts and are
+  excluded from both measurements.
 - Invalid, missing, crashed, and timed-out solutions remain in the report and
   make the evaluator exit nonzero. Animation failure does not invalidate a solver.
 - The leaderboard ranks valid count first, then the mean of best valid length /

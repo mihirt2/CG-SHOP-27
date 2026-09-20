@@ -8,10 +8,13 @@ import os
 import platform
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
+
+import psutil
 
 
 def area(data):
@@ -55,24 +58,59 @@ def sample(paths, count):
     return selected
 
 
-def run(command, timeout, log, cwd=None):
-    """Execute a command; Linux CI uses BenchExec for resource accounting."""
-    if sys.platform != 'linux':
-        start = time.perf_counter()
-        with log.open('wb') as stream:
-            try:
-                completed = subprocess.run(command, cwd=cwd, stdout=stream,
-                                           stderr=subprocess.STDOUT, timeout=timeout)
-            except subprocess.TimeoutExpired:
-                return {'status': 'timeout', 'time_s': time.perf_counter() - start,
-                        'memory_mib': None}
-        return {'status': 'ok' if completed.returncode == 0 else 'error',
-                'time_s': time.perf_counter() - start, 'memory_mib': None}
+def portable_run(command, timeout, log, cwd=None):
+    """Run with psutil when cgroup-based measurement is unavailable."""
+    start, peak, tracked = time.perf_counter(), 0, {}
+    with log.open('wb') as stream:
+        proc = subprocess.Popen(command, cwd=cwd, stdout=stream, stderr=subprocess.STDOUT,
+                                start_new_session=os.name != 'nt')
+        parent, expired = psutil.Process(proc.pid), False
+        try:
+            while True:
+                try:
+                    for child in [parent, *parent.children(recursive=True)]:
+                        tracked[child.pid] = child
+                except psutil.Error:
+                    pass
+                rss = 0
+                for child in tracked.values():
+                    try:
+                        rss += child.memory_info().rss
+                    except psutil.Error:
+                        pass
+                peak = max(peak, rss)
+                if proc.poll() is not None:
+                    break
+                if time.perf_counter() - start >= timeout:
+                    expired = True
+                    break
+                time.sleep(0.02)
+        finally:
+            if os.name != 'nt':
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            for child in reversed(list(tracked.values())):
+                try:
+                    child.kill()
+                except psutil.Error:
+                    pass
+            proc.wait()
+    return {'status': 'timeout' if expired else ('ok' if proc.returncode == 0 else 'error'),
+            'time_s': time.perf_counter() - start, 'memory_mib': peak / 2**20}
 
+
+def run(command, timeout, log, cwd=None):
+    """Use BenchExec when cgroups are available, otherwise use psutil."""
+    if sys.platform != 'linux':
+        return portable_run(command, timeout, log, cwd)
     from benchexec.runexecutor import RunExecutor
     result = RunExecutor().execute_run(args=command, output_filename=str(log),
                                        workingDir=str(cwd) if cwd else None,
                                        walltimelimit=timeout, write_header=False)
+    if 'walltime' not in result:
+        return portable_run(command, timeout, log, cwd)
     exitcode, memory = result.get('exitcode'), result.get('memory')
     return {
         'status': 'timeout' if result.get('terminationreason') == 'walltime'
@@ -248,7 +286,7 @@ def revision(folder):
 def write_environment(out, args, solvers):
     provenance = {'python': sys.version, 'platform': platform.platform(),
                   'processor': platform.processor(), 'cpu_count': os.cpu_count(),
-                  'timeout_s': args.timeout, 'resource_measurement': 'BenchExec process tree on Linux CI',
+                  'timeout_s': args.timeout, 'resource_measurement': 'BenchExec, with psutil process-tree fallback',
                   'solvers': [{'name': name, 'revision': revision(folder) if folder else None}
                               for name, folder in solvers]}
     (out / 'environment.json').write_text(json.dumps(provenance, indent=2))
