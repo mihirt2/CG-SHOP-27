@@ -44,9 +44,25 @@ jobs:
             const marker = '<!-- solver-benchmark -->';
             let body = `${marker}\nBenchmark: [run ${run.id}](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${run.id}) at \`${run.head_sha}\`\n\n`;
             const path = 'report-data/results.json';
-            if (fs.existsSync(path) && fs.statSync(path).size < 1000000) {
-              const rows = JSON.parse(fs.readFileSync(path, 'utf8'));
-              if (!Array.isArray(rows) || rows.length > 500) throw new Error('Invalid report size');
+            const unavailable = reason => {
+              body += `> **Benchmark results unavailable:** ${reason}. See the linked workflow run for details.\n`;
+            };
+            let rows;
+            if (run.conclusion !== 'success') {
+              unavailable(`the workflow concluded with \`${String(run.conclusion || 'unknown').replace(/[^a-z-]/g, '')}\``);
+            } else if (!fs.existsSync(path)) {
+              unavailable('the solver-benchmark artifact did not contain `results.json`');
+            } else if (fs.statSync(path).size >= 1000000) {
+              unavailable('`results.json` exceeded the safe size limit');
+            } else {
+              try {
+                rows = JSON.parse(fs.readFileSync(path, 'utf8'));
+                if (!Array.isArray(rows) || rows.length > 500) throw new Error('Invalid report size');
+              } catch (error) {
+                unavailable('`results.json` was invalid');
+              }
+            }
+            if (rows) {
               const text = x => String(x ?? '').replace(/[^a-zA-Z0-9_ ./-]/g, '').slice(0, 120);
               const number = x => typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x.toFixed(3) : '-';
               const branch = 'benchmark-assets';
@@ -84,9 +100,18 @@ jobs:
               const commit = await github.rest.git.createCommit({...context.repo, message:`Benchmark GIFs for PR ${pr.number}`, tree:newTree.data.sha, parents:previous ? [previous] : []});
               if (previous) await github.rest.git.updateRef({...context.repo, ref:`heads/${branch}`, sha:commit.data.sha});
               else await github.rest.git.createRef({...context.repo, ref:`refs/heads/${branch}`, sha:commit.data.sha});
-              body += '| Solver | Instance (UID) | Status | Efficiency | Max len | Time (s) | Memory (MiB) | Animation |\n|---|---|---|---:|---:|---:|---:|---|\n';
-              for (const r of rows.slice(0, 100))
-                body += `| ${text(r.solver)} | ${text(r.instance)} | ${text(r.status)} | ${number(r.efficiency)} | ${number(r.max_len)} | ${number(r.time_s)} | ${number(r.memory_mib)} | ${r.imageUrl ? `<img src="${r.imageUrl}" width="220" alt="Animation">` : '-'} |\n`;
+              if (rows.length === 0) {
+                body += '> Benchmark completed without solver measurements. This usually means no solver directory changed.\n';
+              } else {
+                body += '| Solver | Instance (UID) | Status | Efficiency | Max len | Time (s) | Memory (MiB) | Animation |\n|---|---|---|---:|---:|---:|---:|---|\n';
+                let omitted = 0;
+                for (const r of rows) {
+                  const line = `| ${text(r.solver)} | ${text(r.instance)} | ${text(r.status)} | ${number(r.efficiency)} | ${number(r.max_len)} | ${number(r.time_s)} | ${number(r.memory_mib)} | ${r.imageUrl ? `<img src="${r.imageUrl}" width="220" alt="Animation">` : '-'} |\n`;
+                  if (body.length + line.length > 60000) omitted += 1;
+                  else body += line;
+                }
+                if (omitted) body += `\n> ${omitted} result${omitted === 1 ? '' : 's'} omitted only to stay within GitHub's comment-size limit; the complete report is in the workflow artifact.\n`;
+              }
 
             }
             fs.writeFileSync('comment.json', JSON.stringify({number:pr.number, sha:run.head_sha, body}));

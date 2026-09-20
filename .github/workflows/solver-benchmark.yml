@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      large:
+        description: Include generated large stress instances
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -30,12 +35,19 @@ jobs:
       - name: Install benchmark utilities
         run: uv sync --frozen --project candidate/src/utils
       - name: Create the fixed-instance manifest
+        env:
+          INCLUDE_LARGE: ${{ inputs.large || false }}
+        shell: bash
         run: |
+          args=()
+          if [ "$INCLUDE_LARGE" = true ]; then args+=(--large); fi
           candidate/src/utils/.venv/bin/python candidate/src/utils/eval-solver.py \
-            merged/src/examples/test_instances1 --sample 15 --write-manifest sample.json
+            merged/src/examples/test_instances1 --sample 15 "${args[@]}" --write-manifest sample.json
       - name: Compute benchmark cache key
+        shell: bash
         run: |
-          sha256sum sample.json candidate/src/utils/eval-solver.py candidate/src/utils/benchmark-baseline.py candidate/src/utils/pyproject.toml candidate/src/utils/uv.lock .github/workflows/solver-benchmark.yml | sha256sum | cut -d' ' -f1 > cache-key.txt
+          set -o pipefail
+          sha256sum sample.json candidate/src/utils/eval-solver.py candidate/src/utils/benchmark-baseline.py candidate/src/utils/pyproject.toml candidate/src/utils/uv.lock candidate/.github/workflows/solver-benchmark.yml | sha256sum | cut -d' ' -f1 > cache-key.txt
       - name: Find changed solver directories
         id: changes
         shell: bash
@@ -102,20 +114,26 @@ jobs:
           done
       - name: Measure cache misses from the merged revision
         if: github.event_name == 'pull_request' && steps.cache.outputs.has-missing == 'true'
+        env:
+          INCLUDE_LARGE: ${{ inputs.large || false }}
         shell: bash
         run: |
           args=()
           while IFS= read -r name; do [ -n "$name" ] && args+=(--solver "$name"); done < missing.txt
+          if [ "$INCLUDE_LARGE" = true ]; then args+=(--large); fi
           candidate/src/utils/.venv/bin/python candidate/src/utils/eval-solver.py \
             merged/src/examples/test_instances1 --solver-root merged=merged/src/solver \
             "${args[@]}" --sample 15 --timeout 30 --animate --prior-results prior-results.json --output merged-results
           cp merged-results/results.json prior-results.json
       - name: Measure changed proposed solvers
         if: steps.changes.outputs.changed != ''
+        env:
+          INCLUDE_LARGE: ${{ inputs.large || false }}
         shell: bash
         run: |
           args=()
           while IFS= read -r name; do [ -n "$name" ] && args+=(--solver "$name"); done < changed.txt
+          if [ "$INCLUDE_LARGE" = true ]; then args+=(--large); fi
           prior=()
           [ -f prior-results.json ] && prior=(--prior-results prior-results.json)
           candidate/src/utils/.venv/bin/python candidate/src/utils/eval-solver.py \
@@ -158,6 +176,7 @@ jobs:
       - name: Build and save the merged baseline cache
         shell: bash
         run: |
+          set -o pipefail
           uv sync --frozen --project src/utils
           sha256sum benchmark-results/sample.json src/utils/eval-solver.py src/utils/benchmark-baseline.py src/utils/pyproject.toml src/utils/uv.lock .github/workflows/solver-benchmark.yml | sha256sum | cut -d' ' -f1 > cache-key.txt
           src/utils/.venv/bin/python src/utils/benchmark-baseline.py write \

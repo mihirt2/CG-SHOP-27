@@ -139,11 +139,13 @@ are not committed.
   so repeating a tour makes the score smaller. Valid solutions score between
   0 and 1, including stationary cutters. Maximum route length remains the
   optimization objective and ranking metric.
-- Time is wall time for the solver command, including interpreter/uv startup and
-  output writing. Memory is the largest sampled sum of RSS over its process tree
-  at 20 ms intervals. Shared pages can be counted more than once and brief peaks
-  can be missed. Validation and GIF generation have separate timeouts and are
-  excluded from both measurements.
+- Time and memory are measured by BenchExec for the complete solver process
+  tree, including interpreter/uv startup and output writing. The benchmark
+  workflow runs on Linux because BenchExec relies on Linux cgroups for reliable
+  process-tree resource accounting. Validation and GIF generation have separate
+  timeouts and are excluded from both measurements.
+- Local non-Linux runs retain wall-time enforcement, but show memory as
+  unavailable rather than publishing a less reliable process-tree estimate.
 - Invalid, missing, crashed, and timed-out solutions remain in the report and
   make the evaluator exit nonzero. Animation failure does not invalidate a solver.
 - The leaderboard ranks valid count first, then the mean of best valid length /
@@ -170,9 +172,13 @@ its solver fingerprint, instance manifest, evaluator, and configuration match.
 Otherwise it measures the relevant merged solver. Its job summary and
 downloadable `solver-benchmark` artifact contain the table and GIFs. The PR
 comment contains the table, the tested commit SHA, and a link to the workflow
-run, with one inline GIF for every solver-instance result. GIFs are publicly
-embedded from the repository's
+run, with one inline GIF for every solver-instance result that fits within
+GitHub's comment-size limit. If that limit is reached, the comment says how
+many rows were omitted and the complete report remains in the workflow
+artifact. GIFs are publicly embedded from the repository's
 `benchmark-assets` branch.
+Manual workflow dispatches retain the `large` input, which adds the three
+generated stress instances to both the manifest and the measured solver runs.
 Solvers with other languages can expose the same Python CLI wrapper, but their
 build dependencies must be installed before evaluation.
 
@@ -183,3 +189,5 @@ comment. Solver execution has a read-only token and no persisted checkout
 credentials. Fork workflows may need a maintainer's first-run approval.
 Reports are advisory because the PR can modify its own benchmark code.
 GIFs are copied to the public `benchmark-assets` branch for inline PR images.
+If the benchmark run fails or its artifact is unavailable, the PR comment says
+so explicitly instead of presenting an empty result as a completed benchmark.

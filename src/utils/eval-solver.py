@@ -8,13 +8,10 @@ import os
 import platform
 from pathlib import Path
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
 import time
-
-import psutil
 
 
 def area(data):
@@ -59,47 +56,30 @@ def sample(paths, count):
 
 
 def run(command, timeout, log, cwd=None):
-    """Bound wall time and sample total process-tree RSS every 20 ms."""
-    start, peak, tracked = time.perf_counter(), 0, {}
-    with log.open('wb') as stream:
-        proc = subprocess.Popen(command, cwd=cwd, stdout=stream, stderr=subprocess.STDOUT,
-                                start_new_session=os.name != 'nt')
-        parent = psutil.Process(proc.pid)
-        expired = False
-        try:
-            while True:
-                try:
-                    for child in [parent, *parent.children(recursive=True)]:
-                        tracked[child.pid] = child
-                except psutil.Error:
-                    pass
-                rss = 0
-                for child in tracked.values():
-                    try:
-                        rss += child.memory_info().rss
-                    except psutil.Error:
-                        pass
-                peak = max(peak, rss)
-                if proc.poll() is not None:
-                    break
-                if time.perf_counter() - start >= timeout:
-                    expired = True
-                    break
-                time.sleep(0.02)
-        finally:
-            if os.name != 'nt':
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            for child in reversed(list(tracked.values())):
-                try:
-                    child.kill()
-                except psutil.Error:
-                    pass
-            proc.wait()
-    return {'status': 'timeout' if expired else ('ok' if proc.returncode == 0 else 'error'),
-            'time_s': time.perf_counter() - start, 'memory_mib': peak / 2**20}
+    """Execute a command; Linux CI uses BenchExec for resource accounting."""
+    if sys.platform != 'linux':
+        start = time.perf_counter()
+        with log.open('wb') as stream:
+            try:
+                completed = subprocess.run(command, cwd=cwd, stdout=stream,
+                                           stderr=subprocess.STDOUT, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return {'status': 'timeout', 'time_s': time.perf_counter() - start,
+                        'memory_mib': None}
+        return {'status': 'ok' if completed.returncode == 0 else 'error',
+                'time_s': time.perf_counter() - start, 'memory_mib': None}
+
+    from benchexec.runexecutor import RunExecutor
+    result = RunExecutor().execute_run(args=command, output_filename=str(log),
+                                       workingDir=str(cwd) if cwd else None,
+                                       walltimelimit=timeout, write_header=False)
+    exitcode, memory = result.get('exitcode'), result.get('memory')
+    return {
+        'status': 'timeout' if result.get('terminationreason') == 'walltime'
+        else ('ok' if exitcode is not None and exitcode.value == 0 else 'error'),
+        'time_s': float(result['walltime']),
+        'memory_mib': float(memory) / 2**20 if memory is not None else None,
+    }
 
 
 def swept_area(instance, solution):
@@ -178,7 +158,7 @@ def report(rows, out):
     (out / 'report.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('instances', type=Path)
     parser.add_argument('solutions', nargs='?', type=Path, help='Validate saved solutions, with no solver timing')
@@ -197,13 +177,10 @@ def main():
     parser.add_argument('--animate-solver-prefix', help='Only animate solvers whose label starts with this prefix')
     parser.add_argument('--large', action='store_true', help='Also generate square stress cases of side 256, 1024, and 4096')
     parser.add_argument('--output', type=Path, default=Path('benchmark-results'))
-    args = parser.parse_args()
-    if args.sample is None:
-        args.sample = 0 if args.solutions else 15
-    if args.sample < 0 or min(args.timeout, args.validation_timeout, args.animation_timeout) <= 0:
-        parser.error('Sample must be nonnegative and timeouts must be positive')
-    out = args.output.resolve()
-    out.mkdir(parents=True, exist_ok=True)
+    return parser, parser.parse_args()
+
+
+def select_instances(args, parser):
     args.instances = args.instances.resolve()
     if args.sample == 15 and not args.solutions:
         paths = [args.instances / name for name in BENCHMARK_INSTANCES]
@@ -214,44 +191,70 @@ def main():
         paths = sample(list(args.instances.glob('*.instance.json')), args.sample)
     if not paths:
         parser.error('No instances found')
-    manifest = [{'uid': json.loads(p.read_text())['instance_uid'], 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in paths]
-    if args.write_manifest:
-        args.write_manifest.write_text(json.dumps(manifest, indent=2) + '\n')
-        return 0
-    solvers = []
-    requested = set(args.solver)
+    return paths
+
+
+def generated_large_instances(enabled):
+    if not enabled:
+        return []
+    instances = []
+    for side in (256, 1024, 4096):
+        uid = f'generated-square-{side}'
+        data = {'content_type': 'CGSHOP2027_Instance', 'instance_uid': uid,
+                'region_to_cover': {'outer_boundary': {'x': [0, side, side, 0], 'y': [0, 0, side, side]}, 'inner_boundaries': []},
+                'cutter': {'x': [0, 4, 4, 0], 'y': [0, 0, 4, 4]}, 'cutter_center': [0, 0], 'number_of_cutters': 3}
+        instances.append((uid, json.dumps(data)))
+    return instances
+
+
+def instance_manifest(paths, generated):
+    manifest = [{'uid': json.loads(p.read_text())['instance_uid'],
+                 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in paths]
+    manifest.extend({'uid': uid, 'sha256': hashlib.sha256(encoded.encode()).hexdigest()}
+                    for uid, encoded in generated)
+    return manifest
+
+
+def discover_solvers(args, parser):
+    solvers, requested = [], set(args.solver)
     for entry in args.solver_root:
         label, root = entry.split('=', 1)
         for folder in sorted(Path(root).resolve().iterdir()):
             if (folder / 'main.py').is_file() and (folder / 'pyproject.toml').is_file() and (not requested or folder.name in requested):
                 solvers.append((f'{label}/{folder.name}', folder))
     found = {folder.name for _, folder in solvers if folder}
-    missing_solvers = requested - found
-    if missing_solvers:
-        parser.error('Requested solver directories not found: ' + ', '.join(sorted(missing_solvers)))
+    missing = requested - found
+    if missing:
+        parser.error('Requested solver directories not found: ' + ', '.join(sorted(missing)))
     if args.solutions:
         solvers.append(('saved-solutions', None))
     if not solvers:
         parser.error('Supply --solver-root LABEL=PATH or a saved solutions directory')
-    if args.large:
-        for side in (256, 1024, 4096):
-            uid = f'generated-square-{side}'
-            data = {'content_type': 'CGSHOP2027_Instance', 'instance_uid': uid,
-                    'region_to_cover': {'outer_boundary': {'x': [0, side, side, 0], 'y': [0, 0, side, side]}, 'inner_boundaries': []},
-                    'cutter': {'x': [0, 4, 4, 0], 'y': [0, 0, 4, 4]}, 'cutter_center': [0, 0], 'number_of_cutters': 3}
-            path = out / f'{uid}.instance.json'
-            path.write_text(json.dumps(data))
-            paths.append(path)
-    (out / 'sample.json').write_text(json.dumps(manifest, indent=2))
-    def revision(folder):
-        result = subprocess.run(['git', '-C', str(folder), 'rev-parse', 'HEAD'], capture_output=True, text=True)
-        return result.stdout.strip() if result.returncode == 0 else None
+    return solvers
+
+
+def write_generated_instances(out, paths, generated):
+    for uid, encoded in generated:
+        path = out / f'{uid}.instance.json'
+        path.write_text(encoded)
+        paths.append(path)
+
+
+def revision(folder):
+    result = subprocess.run(['git', '-C', str(folder), 'rev-parse', 'HEAD'], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def write_environment(out, args, solvers):
     provenance = {'python': sys.version, 'platform': platform.platform(),
                   'processor': platform.processor(), 'cpu_count': os.cpu_count(),
-                  'timeout_s': args.timeout, 'memory_sampling_interval_s': 0.02,
+                  'timeout_s': args.timeout, 'resource_measurement': 'BenchExec process tree on Linux CI',
                   'solvers': [{'name': name, 'revision': revision(folder) if folder else None}
                               for name, folder in solvers]}
     (out / 'environment.json').write_text(json.dumps(provenance, indent=2))
+
+
+def load_prior_rows(args, paths, parser):
     rows = []
     if args.prior_results:
         try:
@@ -266,56 +269,84 @@ def main():
             if extra.name not in expected:
                 rows.append({'solver': 'saved-solutions', 'instance': extra.stem,
                              'status': 'unmatched-solution', 'time_s': None, 'memory_mib': None})
+    return rows
+
+
+def evaluate_instance(solver, folder, source, args, out, script, index):
+    data = json.loads(source.read_text())
+    directory = out / f'run-{index:04d}'
+    directory.mkdir(exist_ok=True)
+    for artifact in ('solution.json', 'validation.json', 'animation.gif'):
+        (directory / artifact).unlink(missing_ok=True)
+    row = {'solver': solver, 'instance': data['instance_uid'], 'area': area(data), 'cutters': data['number_of_cutters']}
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        inputs, outputs = work / 'inputs', work / 'outputs'
+        inputs.mkdir()
+        outputs.mkdir()
+        shutil.copyfile(source, inputs / 'case.instance.json')
+        if folder:
+            command = ['uv', 'run', '--no-sync', '--project', str(folder), 'python', str(folder / 'main.py'), str(outputs), '--instances', str(inputs)]
+            row.update(run(command, args.timeout, directory / 'solver.log', cwd=folder))
+            candidates = list(outputs.glob('*.solution.json'))
+        else:
+            candidates = [p for p in args.solutions.glob('*.solution.json') if p.name == source.name.replace('.instance.json', '.solution.json')]
+            row.update(status='ok', time_s=None, memory_mib=None)
+        if row['status'] == 'ok' and len(candidates) != 1:
+            row['status'] = 'missing-output' if not candidates else 'multiple-outputs'
+        if row['status'] == 'ok':
+            solution = directory / 'solution.json'
+            shutil.copyfile(candidates[0], solution)
+            validation = run([sys.executable, script, '--validate', str(source.resolve()), str(solution), str(directory / 'validation.json')], args.validation_timeout, directory / 'validation.log')
+            row['status'] = 'validation-' + validation['status']
+            if validation['status'] == 'ok':
+                result = json.loads((directory / 'validation.json').read_text())
+                row['status'] = 'invalid' if result['errors'] else 'valid'
+                row['errors'] = result['errors']
+                if row['status'] == 'valid':
+                    row['max_len'] = result['max_len']
+                    row['swept_area'] = result['swept_area']
+                    row['efficiency'] = row['area'] / row['swept_area'] if row['swept_area'] else None
+                    if args.animate and (args.animate_solver_prefix is None or solver.startswith(args.animate_solver_prefix)):
+                        gif = directory / 'animation.gif'
+                        animation = run([sys.executable, script, '--animate', str(source.resolve()), str(solution), str(gif)], args.animation_timeout, directory / 'animation.log')
+                        row['animation_status'] = animation['status']
+                        if animation['status'] == 'ok' and gif.exists():
+                            row['animation'] = gif.relative_to(out).as_posix()
+    return row
+
+
+def evaluate(solvers, paths, args, out, rows):
     script = str(Path(__file__).resolve())
     for solver, folder in solvers:
-        for index, source in enumerate(paths):
-            data = json.loads(source.read_text())
-            uid = data['instance_uid']
-            # Artifact paths never depend on untrusted instance UIDs or solver labels.
-            directory = out / f'run-{len(rows):04d}'
-            directory.mkdir(exist_ok=True)
-            for artifact in ('solution.json', 'validation.json', 'animation.gif'):
-                (directory / artifact).unlink(missing_ok=True)
-            row = {'solver': solver, 'instance': uid, 'area': area(data), 'cutters': data['number_of_cutters']}
-            with tempfile.TemporaryDirectory() as tmp:
-                work = Path(tmp)
-                inputs, outputs = work / 'inputs', work / 'outputs'
-                inputs.mkdir()
-                outputs.mkdir()
-                shutil.copyfile(source, inputs / 'case.instance.json')
-                if folder:
-                    command = ['uv', 'run', '--no-sync', '--project', str(folder), 'python', str(folder / 'main.py'), str(outputs), '--instances', str(inputs)]
-                    row.update(run(command, args.timeout, directory / 'solver.log', cwd=folder))
-                    candidates = list(outputs.glob('*.solution.json'))
-                else:
-                    candidates = [p for p in args.solutions.glob('*.solution.json') if p.name == source.name.replace('.instance.json', '.solution.json')]
-                    row.update(status='ok', time_s=None, memory_mib=None)
-                if row['status'] == 'ok' and len(candidates) != 1:
-                    row['status'] = 'missing-output' if not candidates else 'multiple-outputs'
-                if row['status'] == 'ok':
-                    solution = directory / 'solution.json'
-                    shutil.copyfile(candidates[0], solution)
-                    validation = run([sys.executable, script, '--validate', str(source.resolve()), str(solution), str(directory / 'validation.json')], args.validation_timeout, directory / 'validation.log')
-                    row['status'] = 'validation-' + validation['status']
-                    if validation['status'] == 'ok':
-                        result = json.loads((directory / 'validation.json').read_text())
-                        row['status'] = 'invalid' if result['errors'] else 'valid'
-                        row['errors'] = result['errors']
-                        if row['status'] == 'valid':
-                            row['max_len'] = result['max_len']
-                            denom = result['swept_area']
-                            row['swept_area'] = denom
-                            row['efficiency'] = row['area'] / denom if denom else None
-                            if args.animate and (args.animate_solver_prefix is None or solver.startswith(args.animate_solver_prefix)):
-                                gif = directory / 'animation.gif'
-                                animation = run([sys.executable, script, '--animate', str(source.resolve()), str(solution), str(gif)], args.animation_timeout, directory / 'animation.log')
-                                row['animation_status'] = animation['status']
-                                if animation['status'] == 'ok' and gif.exists():
-                                    row['animation'] = gif.relative_to(out).as_posix()
-                rows.append(row)
-                print(f"{solver} {uid}: {row['status']}", flush=True)
-                (out / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False))
-                report(rows, out)
+        for source in paths:
+            row = evaluate_instance(solver, folder, source, args, out, script, len(rows))
+            rows.append(row)
+            print(f"{solver} {row['instance']}: {row['status']}", flush=True)
+            (out / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False))
+            report(rows, out)
+
+
+def main():
+    parser, args = parse_args()
+    if args.sample is None:
+        args.sample = 0 if args.solutions else 15
+    if args.sample < 0 or min(args.timeout, args.validation_timeout, args.animation_timeout) <= 0:
+        parser.error('Sample must be nonnegative and timeouts must be positive')
+    out = args.output.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    paths = select_instances(args, parser)
+    generated = generated_large_instances(args.large)
+    manifest = instance_manifest(paths, generated)
+    if args.write_manifest:
+        args.write_manifest.write_text(json.dumps(manifest, indent=2) + '\n')
+        return 0
+    solvers = discover_solvers(args, parser)
+    write_generated_instances(out, paths, generated)
+    (out / 'sample.json').write_text(json.dumps(manifest, indent=2))
+    write_environment(out, args, solvers)
+    rows = load_prior_rows(args, paths, parser)
+    evaluate(solvers, paths, args, out, rows)
     return 1 if any(r['status'] != 'valid' for r in rows) else 0
 
 
