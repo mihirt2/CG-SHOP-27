@@ -132,13 +132,14 @@ are not committed.
 - The default solver benchmark uses 15 fixed instances spanning multiple field
   sizes and families. `BENCHMARK_INSTANCES` names the exact files, and
   `sample.json` records their UIDs and input hashes.
-- Coverage efficiency is **field area / total swept area**. Only validated
-  solutions are scored, and the numerator excludes field holes. The total is
-  the sum of every cutter footprint swept along every tour edge, including
-  coverage outside the field. Overlap and revisits count every time they occur,
-  so repeating a tour makes the score smaller. Valid solutions score between
-  0 and 1, including stationary cutters. Maximum route length remains the
-  optimization objective and ranking metric.
+- Coverage efficiency is **field area divided by length-balanced swept area**.
+  For each moving cutter, its swept area is multiplied by the ratio of the
+  longest tour length to that cutter's tour length, and these weighted areas are
+  summed. A cutter's swept area is its initial footprint plus the incremental
+  area swept by each edge. Coverage outside the field, overlap, and revisits all
+  count. A stationary cutter is excluded from the ratio unless every cutter is
+  stationary, in which case efficiency is undefined. Maximum route length
+  remains the optimization objective and ranking metric.
 - Time and memory include interpreter/uv startup and output writing. On Linux
   runners with cgroups, BenchExec measures the complete solver process tree;
   otherwise the evaluator uses psutil to sample the process tree at 20 ms

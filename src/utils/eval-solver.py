@@ -120,32 +120,61 @@ def run(command, timeout, log, cwd=None):
     }
 
 
-def swept_area(instance, solution):
-    """Sum the footprint swept on every tour edge, including revisits.
+def swept_areas_and_lengths(instance, solution):
+    """Measure each cutter's swept area and trajectory length.
 
-    Consecutive edges may overlap, and that overlap deliberately counts again.
-    Thus, following the same tour ten times incurs ten times its swept area.
-    A stationary cutter contributes its initial footprint.
+    A tour starts by covering one cutter footprint.  Every later edge contributes
+    only the additional area swept while moving from its start placement to its
+    end placement.  This counts overlap with earlier edges again, so following
+    the same tour ten times incurs roughly ten times its swept area.
     """
     import numpy as np
     from cgshop2027_pyutils.grid import CellSet, dilate, rasterize_ring
 
     cx, cy = instance.cutter_center
     cutter = rasterize_ring(instance.cutter).translated(-cx, -cy)
-    total = 0
+    swept_areas, lengths = [], []
     for tour in solution.tours:
         edges = list(tour.edges())
-        if not edges:
-            total += len(cutter)
+        swept = len(cutter)
+        length = 0
         for (ax, ay), (bx, by) in edges:
+            if ax != bx and ay != by:
+                raise ValueError('Only axis-aligned tour edges are supported')
             x0, y0 = min(ax, bx), min(ay, by)
             mask = np.zeros((abs(by - ay) + 1, abs(bx - ax) + 1), dtype=bool)
             if ay == by:
                 mask[ay - y0, min(ax, bx) - x0:max(ax, bx) - x0 + 1] = True
             else:
                 mask[min(ay, by) - y0:max(ay, by) - y0 + 1, ax - x0] = True
-            total += len(dilate(CellSet(mask, (x0, y0)), cutter))
-    return total
+            # The footprint at the edge's first endpoint was already counted:
+            # initially for the first edge, and by the preceding edge after it.
+            swept += len(dilate(CellSet(mask, (x0, y0)), cutter)) - len(cutter)
+            length += abs(bx - ax) + abs(by - ay)
+        swept_areas.append(swept)
+        lengths.append(length)
+    return swept_areas, lengths
+
+
+def efficiency(instance, solution):
+    """Return field area divided by length-balanced swept area.
+
+    For cutter i, its swept area is weighted by max tour length / its own tour
+    length.  A zero-length cutter cannot contribute to this ratio, so it is
+    excluded unless every cutter is stationary.
+    """
+    swept_areas, lengths = swept_areas_and_lengths(instance, solution)
+    max_length = max(lengths, default=0)
+
+    if max_length == 0:
+        return None, swept_areas, lengths
+
+    weighted_swept_area = sum(
+        swept * max_length / length
+        for swept, length in zip(swept_areas, lengths)
+        if length > 0
+    )
+    return area(instance.model_dump(mode='json')) / weighted_swept_area, swept_areas, lengths
 
 
 def worker(args):
@@ -156,9 +185,19 @@ def worker(args):
     if instance.instance_uid != solution.instance_uid:
         errors.append('Instance UID mismatch')
     if args[0] == '--validate':
+        if errors:
+            metrics = {}
+        else:
+            value, per_tour_swept_areas, tour_lengths = efficiency(instance, solution)
+            metrics = {
+                'efficiency': value,
+                'swept_area': sum(per_tour_swept_areas),
+                'per_tour_swept_areas': per_tour_swept_areas,
+                'tour_lengths': tour_lengths,
+            }
         Path(args[3]).write_text(json.dumps({'errors': [str(e) for e in errors],
                                            'max_len': solution.max_tour_length,
-                                           'swept_area': swept_area(instance, solution) if not errors else None}))
+                                           **metrics}))
     elif not errors:
         import matplotlib
         matplotlib.use('Agg')
@@ -344,7 +383,9 @@ def evaluate_instance(solver, folder, source, args, out, script, index):
                 if row['status'] == 'valid':
                     row['max_len'] = result['max_len']
                     row['swept_area'] = result['swept_area']
-                    row['efficiency'] = row['area'] / row['swept_area'] if row['swept_area'] else None
+                    row['per_tour_swept_areas'] = result['per_tour_swept_areas']
+                    row['tour_lengths'] = result['tour_lengths']
+                    row['efficiency'] = result['efficiency']
                     if args.animate and (args.animate_solver_prefix is None or solver.startswith(args.animate_solver_prefix)):
                         gif = directory / 'animation.gif'
                         animation = run([sys.executable, script, '--animate', str(source.resolve()), str(solution), str(gif)], args.animation_timeout, directory / 'animation.log')
