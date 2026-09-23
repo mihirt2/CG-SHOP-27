@@ -122,16 +122,22 @@ are excluded from the timings:
 ```sh
 uv sync --frozen --project src/utils
 uv sync --frozen --project src/solver/py-bounding-rect-solver
-uv run --no-sync --project src/utils python src/utils/eval-solver.py src/examples/test_instances1 --solver-root proposed=src/solver --sample 15 --timeout 30 --animate
+uv run --no-sync --project src/utils python src/utils/benchmark-instances.py src/examples/test_instances1 --output benchmark-inputs
+uv run --no-sync --project src/utils python src/utils/benchmark-run.py benchmark-inputs/instances --solver-root proposed=src/solver --timeout 30 --animate --output benchmark-dumps
+uv run --no-sync --project src/utils python src/utils/benchmark-clean.py --dumps benchmark-dumps --manifest benchmark-inputs/manifest.json --output benchmark-results
 ```
 
-Run these commands from the repository root. Open `benchmark-results/report.md`
-for the per-instance table. Generated reports, logs, solutions, and animations
+Run these commands from the repository root. The three scripts are independent:
+the first creates a reproducible instance manifest, the second writes raw dumps,
+and the third produces portable cleaned artifacts. Open
+`benchmark-results/report.md` for the per-instance table. The fourth stage is
+the privileged GitHub Action that reads the cleaned artifact, publishes GIFs,
+and updates the PR comment. Generated reports, logs, solutions, and animations
 are not committed.
 
 - The default solver benchmark uses 15 fixed instances spanning multiple field
-  sizes and families. `BENCHMARK_INSTANCES` names the exact files, and
-  `sample.json` records their UIDs and input hashes.
+  sizes and families. `BENCHMARK_INSTANCES` names the exact files, and the
+  fetched `manifest.json` records their UIDs and input hashes.
 - Coverage efficiency is **field area divided by length-balanced swept area**.
   For each moving cutter, its swept area is multiplied by the ratio of the
   longest tour length to that cutter's tour length, and these weighted areas are
@@ -152,16 +158,16 @@ are not committed.
   relative to this run, not the official competition score. `environment.json`
   records revisions and machine information. Compare timings on the same runner.
 
-Use `--sample 0` for all examples. Add `--large` for generated square fields of
-side 256, 1024, and 4096 with three 4-by-4 cutters. These stress grid size and
-route length, but do not replace irregular/holey examples. To compare another
-checkout on the exact same inputs, repeat `--solver-root`, for example
-`--solver-root merged=../merged/src/solver --solver-root proposed=src/solver`.
-Install each checkout's solver environments first.
+Use `--sample 0` on `benchmark-instances.py` for all examples. Add `--large`
+there for generated square fields of side 256, 1024, and 4096 with three 4-by-4
+cutters. These stress grid size and route length, but do not replace
+irregular/holey examples. To compare another checkout on the exact same inputs,
+repeat `--solver-root`, for example `--solver-root merged=../merged/src/solver
+--solver-root proposed=src/solver`. Install each checkout's solver environments
+first.
 
 The original `eval-solver.py INSTANCES SOLUTIONS` command still validates saved
-solutions, with no invented timing or memory measurements. It defaults to all
-instances, or accepts `--sample 15` for the fixed benchmark set.
+solutions, with no invented timing or memory measurements.
 
 ### PR reports
 
