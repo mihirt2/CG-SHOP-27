@@ -44,8 +44,8 @@ def report(rows, output):
     (output / 'leaderboard.json').write_text(json.dumps(sorted(leaderboard, key=lambda r: (-r[0], -r[1], r[2])), indent=2) + '\n')
     lines = ['| Solver | Instance (UID) | Status | Efficiency | Max len | Time (s) | Memory (MiB) | Animation |', '|---|---|---:|---:|---:|---:|---:|---|']
     for row in rows:
-        number = lambda key: '—' if row.get(key) is None else f"{row[key]:.3f}"
-        lines.append(f"| {row['solver']} | {row['instance']} | {row['status']} | {number('efficiency')} | {number('max_len')} | {number('time_s')} | {number('memory_mib')} | {'yes' if row.get('animation') else '—'} |")
+        number = lambda key: '-' if row.get(key) is None else f"{row[key]:.3f}"
+        lines.append(f"| {row['solver']} | {row['instance']} | {row['status']} | {number('efficiency')} | {number('max_len')} | {number('time_s')} | {number('memory_mib')} | {'yes' if row.get('animation') else '-'} |")
     (output / 'report.md').write_text('\n'.join(lines) + '\n')
 
 

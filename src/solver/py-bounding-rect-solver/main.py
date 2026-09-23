@@ -8,7 +8,6 @@ INSTANCES = Path(__file__).parent / "../../examples/test_instances1"
 
 
 def main() -> None:
-    # Keep this solver in the benchmark workflow's end-to-end coverage set.
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)
     parser.add_argument("--instances", type=Path, default=INSTANCES)
