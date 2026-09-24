@@ -47,7 +47,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          sha256sum benchmark-inputs/manifest.json candidate/src/utils/benchmark-instances.py candidate/src/utils/benchmark-run.py candidate/src/utils/benchmark-clean.py candidate/src/utils/benchmark-baseline.py candidate/src/utils/pyproject.toml candidate/src/utils/uv.lock candidate/.github/workflows/solver-benchmark.yml | sha256sum | cut -d' ' -f1 > cache-key.txt
+          sha256sum benchmark-inputs/manifest.json candidate/src/utils/benchmark-instances.py candidate/src/utils/benchmark-run.py candidate/src/utils/benchmark-clean.py candidate/src/utils/benchmark-baseline.py candidate/src/utils/pyproject.toml candidate/src/utils/uv.lock candidate/.github/workflows/solver-benchmark.yml | cut -d' ' -f1 | sha256sum | cut -d' ' -f1 > cache-key.txt
       - name: Find changed solver directories
         id: changes
         shell: bash
@@ -113,7 +113,9 @@ jobs:
             [ -f "$project/main.py" ] && [ -f "$project/pyproject.toml" ] && uv sync --frozen --project "$project"
           done
       - name: Run cache misses from the merged revision
+        id: run-merged
         if: github.event_name == 'pull_request' && steps.cache.outputs.has-missing == 'true'
+        continue-on-error: true
         shell: bash
         run: |
           args=()
@@ -121,11 +123,17 @@ jobs:
           candidate/src/utils/.venv/bin/python candidate/src/utils/benchmark-run.py \
             benchmark-inputs/instances --solver-root merged=merged/src/solver \
             "${args[@]}" --timeout 30 --animate --output merged-dumps
+      - name: Clean merged cache misses
+        if: always() && github.event_name == 'pull_request' && steps.cache.outputs.has-missing == 'true'
+        shell: bash
+        run: |
           candidate/src/utils/.venv/bin/python candidate/src/utils/benchmark-clean.py \
             --dumps merged-dumps --manifest benchmark-inputs/manifest.json --output merged-results
           cp merged-results/results.json prior-results.json
       - name: Run changed proposed solvers
+        id: run-proposed
         if: steps.changes.outputs.changed != ''
+        continue-on-error: true
         shell: bash
         run: |
           args=()
@@ -133,18 +141,25 @@ jobs:
           candidate/src/utils/.venv/bin/python candidate/src/utils/benchmark-run.py \
             benchmark-inputs/instances --solver-root candidate=candidate/src/solver \
             "${args[@]}" --timeout 30 --animate --output benchmark-dumps
+      - name: Clean changed proposed solvers
+        if: always() && steps.changes.outputs.changed != ''
+        shell: bash
+        run: |
           prior=()
           [ -f prior-results.json ] && prior=(--prior-results prior-results.json)
           candidate/src/utils/.venv/bin/python candidate/src/utils/benchmark-clean.py \
             --dumps benchmark-dumps --manifest benchmark-inputs/manifest.json "${prior[@]}" --output benchmark-results
       - name: Clean an empty or removed-only report
-        if: steps.changes.outputs.changed == ''
+        if: always() && steps.changes.outputs.changed == ''
         shell: bash
         run: |
           prior=()
           [ -f prior-results.json ] && prior=(--prior-results prior-results.json)
           candidate/src/utils/.venv/bin/python candidate/src/utils/benchmark-clean.py \
             --manifest benchmark-inputs/manifest.json "${prior[@]}" --output benchmark-results
+      - name: Mark failed solver evaluations as failed
+        if: always() && (steps.run-merged.outcome == 'failure' || steps.run-proposed.outcome == 'failure')
+        run: exit 1
       - name: Job summary
         if: always() && hashFiles('benchmark-results/report.md') != ''
         run: cat benchmark-results/report.md >> "$GITHUB_STEP_SUMMARY"
@@ -178,7 +193,7 @@ jobs:
         run: |
           set -o pipefail
           uv sync --frozen --project src/utils
-          sha256sum benchmark-results/sample.json src/utils/benchmark-instances.py src/utils/benchmark-run.py src/utils/benchmark-clean.py src/utils/benchmark-baseline.py src/utils/pyproject.toml src/utils/uv.lock .github/workflows/solver-benchmark.yml | sha256sum | cut -d' ' -f1 > cache-key.txt
+          sha256sum benchmark-results/sample.json src/utils/benchmark-instances.py src/utils/benchmark-run.py src/utils/benchmark-clean.py src/utils/benchmark-baseline.py src/utils/pyproject.toml src/utils/uv.lock .github/workflows/solver-benchmark.yml | cut -d' ' -f1 | sha256sum | cut -d' ' -f1 > cache-key.txt
           src/utils/.venv/bin/python src/utils/benchmark-baseline.py write \
             --results benchmark-results/results.json --sample benchmark-results/sample.json \
             --solver-root src/solver --cache-key "$(cat cache-key.txt)" --output baseline.json

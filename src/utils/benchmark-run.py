@@ -129,17 +129,22 @@ def efficiency(instance, solution):
     excluded unless every cutter is stationary.
     """
     swept_areas, lengths = swept_areas_and_lengths(instance, solution)
-    max_length = max(lengths, default=0)
-
-    if max_length == 0:
+    weighted_swept_area = length_balanced_swept_area(swept_areas, lengths)
+    if weighted_swept_area is None:
         return None, swept_areas, lengths
+    return area(instance.model_dump(mode='json')) / weighted_swept_area, swept_areas, lengths
 
-    weighted_swept_area = sum(
+
+def length_balanced_swept_area(swept_areas, lengths):
+    """Exclude stationary cutters unless every cutter is stationary."""
+    max_length = max(lengths, default=0)
+    if max_length == 0:
+        return None
+    return sum(
         swept * max_length / length
         for swept, length in zip(swept_areas, lengths)
         if length > 0
     )
-    return area(instance.model_dump(mode='json')) / weighted_swept_area, swept_areas, lengths
 
 
 def worker(args):
@@ -262,6 +267,7 @@ def evaluate_instance(solver, folder, source, args, out, script, index):
 def evaluate(solvers, paths, args, out):
     rows = []
     script = str(Path(__file__).resolve())
+    (out / 'raw-results.json').write_text('[]\n')
     for solver, folder in solvers:
         for source in paths:
             row = evaluate_instance(solver, folder, source, args, out, script, len(rows))

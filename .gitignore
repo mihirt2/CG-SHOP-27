@@ -2,3 +2,5 @@ src/examples/
 __pycache__/
 *.py[cod]
 /benchmark-results/
+/benchmark-inputs/
+/benchmark-dumps/
