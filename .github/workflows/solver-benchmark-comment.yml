@@ -48,9 +48,7 @@ jobs:
               body += `> **Benchmark results unavailable:** ${reason}. See the linked workflow run for details.\n`;
             };
             let rows;
-            if (run.conclusion !== 'success') {
-              unavailable(`the workflow concluded with \`${String(run.conclusion || 'unknown').replace(/[^a-z-]/g, '')}\``);
-            } else if (!fs.existsSync(path)) {
+            if (!fs.existsSync(path)) {
               unavailable('the solver-benchmark artifact did not contain `results.json`');
             } else if (fs.statSync(path).size >= 1000000) {
               unavailable('`results.json` exceeded the safe size limit');
@@ -63,6 +61,9 @@ jobs:
               }
             }
             if (rows) {
+              if (run.conclusion !== 'success') {
+                body += `> The workflow concluded with \`${String(run.conclusion || 'unknown').replace(/[^a-z-]/g, '')}\`; the table records the failed solver evaluations.\n\n`;
+              }
               const text = x => String(x ?? '').replace(/[^a-zA-Z0-9_ ./-]/g, '').slice(0, 120);
               const number = x => typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x.toFixed(3) : '-';
               const branch = 'benchmark-assets';
