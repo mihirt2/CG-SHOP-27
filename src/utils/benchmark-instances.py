@@ -50,6 +50,37 @@ def generated_large_instances():
         })
 
 
+def select_instances(source, sample, parser):
+    if sample == 15:
+        paths = [source / name for name in BENCHMARK_INSTANCES]
+        missing = [path.name for path in paths if not path.is_file()]
+        if missing:
+            parser.error('Missing fixed benchmark instances: ' + ', '.join(missing))
+        return paths
+    return stratified_sample(list(source.glob('*.instance.json')), sample)
+
+
+def copy_instance(source, destination):
+    shutil.copyfile(source, destination)
+    return {'uid': json.loads(destination.read_text())['instance_uid'],
+            'sha256': hashlib.sha256(destination.read_bytes()).hexdigest()}
+
+
+def prepare_instances(source, output, sample, include_large, parser):
+    paths = select_instances(source, sample, parser)
+    if not paths:
+        parser.error('No instances found')
+    instances = output / 'instances'
+    instances.mkdir(parents=True, exist_ok=True)
+    manifest = [copy_instance(path, instances / path.name) for path in paths]
+    if include_large:
+        for uid, encoded in generated_large_instances():
+            destination = instances / f'{uid}.instance.json'
+            destination.write_text(encoded)
+            manifest.append({'uid': uid, 'sha256': hashlib.sha256(encoded.encode()).hexdigest()})
+    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path, help='Directory containing .instance.json files')
@@ -60,29 +91,7 @@ def main():
 
     source = args.source.resolve()
     output = args.output.resolve()
-    instances = output / 'instances'
-    instances.mkdir(parents=True, exist_ok=True)
-    if args.sample == 15:
-        paths = [source / name for name in BENCHMARK_INSTANCES]
-        missing = [path.name for path in paths if not path.is_file()]
-        if missing:
-            parser.error('Missing fixed benchmark instances: ' + ', '.join(missing))
-    else:
-        paths = stratified_sample(list(source.glob('*.instance.json')), args.sample)
-    if not paths:
-        parser.error('No instances found')
-
-    manifest = []
-    for path in paths:
-        destination = instances / path.name
-        shutil.copyfile(path, destination)
-        manifest.append({'uid': json.loads(destination.read_text())['instance_uid'], 'sha256': hashlib.sha256(destination.read_bytes()).hexdigest()})
-    if args.large:
-        for uid, encoded in generated_large_instances():
-            destination = instances / f'{uid}.instance.json'
-            destination.write_text(encoded)
-            manifest.append({'uid': uid, 'sha256': hashlib.sha256(encoded.encode()).hexdigest()})
-    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    prepare_instances(source, output, args.sample, args.large, parser)
 
 
 if __name__ == '__main__':

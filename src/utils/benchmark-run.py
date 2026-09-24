@@ -15,6 +15,10 @@ import time
 import psutil
 
 
+VALIDATION_TIMEOUT = 60
+ANIMATION_TIMEOUT = 120
+
+
 def area(data):
     def polygon(p):
         pts = list(zip(p['x'], p['y']))
@@ -152,35 +156,42 @@ def length_balanced_swept_area(swept_areas, lengths):
     )
 
 
-def worker(args):
+def validate_solution(instance_path, solution_path):
     from cgshop2027_pyutils.io import read_instance, read_solution
     from cgshop2027_pyutils.verify import check_for_errors
-    instance, solution = read_instance(args[1]), read_solution(args[2])
+    instance, solution = read_instance(instance_path), read_solution(solution_path)
     errors = check_for_errors(instance, solution)
     if instance.instance_uid != solution.instance_uid:
         errors.append('Instance UID mismatch')
-    if args[0] == '--validate':
-        if errors:
-            metrics = {}
-        else:
-            value, per_tour_swept_areas, tour_lengths = efficiency(instance, solution)
-            metrics = {
-                'efficiency': value,
-                'swept_area': sum(per_tour_swept_areas),
-                'per_tour_swept_areas': per_tour_swept_areas,
-                'tour_lengths': tour_lengths,
-            }
-        Path(args[3]).write_text(json.dumps({'errors': [str(e) for e in errors],
-                                           'max_len': solution.max_tour_length,
-                                           **metrics}))
-    elif not errors:
-        import matplotlib
-        matplotlib.use('Agg')
-        from cgshop2027_pyutils.visualize import create_solution_animation
-        animation = create_solution_animation(instance, solution, max_frames=40, interval=150)
-        animation.save(args[3], writer='pillow', dpi=55)
-    else:
+    if errors:
+        return {'errors': [str(e) for e in errors], 'max_len': solution.max_tour_length}
+    value, per_tour_swept_areas, tour_lengths = efficiency(instance, solution)
+    return {
+        'errors': [], 'max_len': solution.max_tour_length, 'efficiency': value,
+        'swept_area': sum(per_tour_swept_areas),
+        'per_tour_swept_areas': per_tour_swept_areas, 'tour_lengths': tour_lengths,
+    }
+
+
+def create_animation(instance_path, solution_path, destination):
+    result = validate_solution(instance_path, solution_path)
+    if result['errors']:
         raise ValueError('Cannot animate an invalid solution')
+    import matplotlib
+    matplotlib.use('Agg')
+    from cgshop2027_pyutils.io import read_instance, read_solution
+    from cgshop2027_pyutils.visualize import create_solution_animation
+    animation = create_solution_animation(read_instance(instance_path), read_solution(solution_path),
+                                          max_frames=40, interval=150)
+    animation.save(destination, writer='pillow', dpi=55)
+
+
+def worker(args):
+    action, instance_path, solution_path, destination = args
+    if action == '--validate':
+        Path(destination).write_text(json.dumps(validate_solution(instance_path, solution_path)))
+    else:
+        create_animation(instance_path, solution_path, destination)
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -189,10 +200,7 @@ def worker(args):
     parser.add_argument('--solver', action='append', default=[], metavar='NAME',
                         help='Evaluate only these solver directory names (repeatable)')
     parser.add_argument('--timeout', type=float, default=30)
-    parser.add_argument('--validation-timeout', type=float, default=60)
-    parser.add_argument('--animation-timeout', type=float, default=120)
     parser.add_argument('--animate', action='store_true')
-    parser.add_argument('--animate-solver-prefix', help='Only animate solvers whose label starts with this prefix')
     parser.add_argument('--output', type=Path, required=True, help='New raw dump directory')
     return parser, parser.parse_args()
 
@@ -221,7 +229,7 @@ def revision(folder):
 def write_environment(out, args, solvers):
     provenance = {'python': sys.version, 'platform': platform.platform(),
                   'processor': platform.processor(), 'cpu_count': os.cpu_count(),
-                  'timeout_s': args.timeout, 'resource_measurement': 'BenchExec, with psutil process-tree fallback',
+                  'timeout_s': args.timeout, 'resource_measurement': 'BenchExec on Linux, psutil elsewhere',
                   'solvers': [{'name': name, 'revision': revision(folder) if folder else None}
                               for name, folder in solvers]}
     (out / 'environment.json').write_text(json.dumps(provenance, indent=2))
@@ -246,27 +254,37 @@ def evaluate_instance(solver, folder, source, args, out, script, index):
         if row['status'] == 'ok' and len(candidates) != 1:
             row['status'] = 'missing-output' if not candidates else 'multiple-outputs'
         if row['status'] == 'ok':
-            solution = directory / 'solution.json'
-            shutil.copyfile(candidates[0], solution)
-            validation = run([sys.executable, script, '--validate', str(source.resolve()), str(solution), str(directory / 'validation.json')], args.validation_timeout, directory / 'validation.log')
-            row['status'] = 'validation-' + validation['status']
-            if validation['status'] == 'ok':
-                result = json.loads((directory / 'validation.json').read_text())
-                row['status'] = 'invalid' if result['errors'] else 'valid'
-                row['errors'] = result['errors']
-                if row['status'] == 'valid':
-                    row['max_len'] = result['max_len']
-                    row['swept_area'] = result['swept_area']
-                    row['per_tour_swept_areas'] = result['per_tour_swept_areas']
-                    row['tour_lengths'] = result['tour_lengths']
-                    row['efficiency'] = result['efficiency']
-                    if args.animate and (args.animate_solver_prefix is None or solver.startswith(args.animate_solver_prefix)):
-                        gif = directory / 'animation.gif'
-                        animation = run([sys.executable, script, '--animate', str(source.resolve()), str(solution), str(gif)], args.animation_timeout, directory / 'animation.log')
-                        row['animation_status'] = animation['status']
-                        if animation['status'] == 'ok' and gif.exists():
-                            row['animation'] = gif.relative_to(out).as_posix()
+            validate_candidate(row, candidates[0], source, directory, script)
+        if row['status'] == 'valid' and args.animate:
+            animate_candidate(row, source, directory, script, out)
     return row
+
+
+def validate_candidate(row, candidate, source, directory, script):
+    solution = directory / 'solution.json'
+    shutil.copyfile(candidate, solution)
+    validation = run([sys.executable, script, '--validate', str(source.resolve()),
+                      str(solution), str(directory / 'validation.json')], VALIDATION_TIMEOUT,
+                     directory / 'validation.log')
+    row['status'] = 'validation-' + validation['status']
+    if validation['status'] != 'ok':
+        return
+    result = json.loads((directory / 'validation.json').read_text())
+    row['status'] = 'invalid' if result['errors'] else 'valid'
+    row['errors'] = result['errors']
+    if row['status'] == 'valid':
+        row.update({key: result[key] for key in ('max_len', 'swept_area',
+                   'per_tour_swept_areas', 'tour_lengths', 'efficiency')})
+
+
+def animate_candidate(row, source, directory, script, output):
+    gif = directory / 'animation.gif'
+    animation = run([sys.executable, script, '--animate', str(source.resolve()),
+                     str(directory / 'solution.json'), str(gif)], ANIMATION_TIMEOUT,
+                    directory / 'animation.log')
+    row['animation_status'] = animation['status']
+    if animation['status'] == 'ok' and gif.exists():
+        row['animation'] = gif.relative_to(output).as_posix()
 
 
 def evaluate(solvers, paths, args, out):
@@ -283,8 +301,8 @@ def evaluate(solvers, paths, args, out):
 
 def main():
     parser, args = parse_args()
-    if min(args.timeout, args.validation_timeout, args.animation_timeout) <= 0:
-        parser.error('Timeouts must be positive')
+    if args.timeout <= 0:
+        parser.error('Timeout must be positive')
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     args.instances = args.instances.resolve()

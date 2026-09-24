@@ -49,6 +49,30 @@ def report(rows, output):
     (output / 'report.md').write_text('\n'.join(lines) + '\n')
 
 
+def load_rows(dumps, prior_results):
+    rows = []
+    if prior_results:
+        rows.extend(json.loads(prior_results.read_text()))
+    if dumps:
+        rows.extend(json.loads((dumps.resolve() / 'raw-results.json').read_text()))
+    return [clean_row(row) for row in rows]
+
+
+def copy_animations(rows, dumps, output):
+    dump_root = dumps.resolve() if dumps else None
+    for row in rows:
+        animation = row.get('animation')
+        if not animation or dump_root is None:
+            row.pop('animation', None)
+            continue
+        source, destination = dump_root / animation, output / animation
+        if not source.is_file() or not source.resolve().is_relative_to(dump_root):
+            row.pop('animation', None)
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dumps', type=Path, help='Stage-2 dump directory')
@@ -58,24 +82,8 @@ def main():
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    rows = []
-    if args.prior_results:
-        rows.extend(json.loads(args.prior_results.read_text()))
-    if args.dumps:
-        dumps = args.dumps.resolve()
-        rows.extend(json.loads((dumps / 'raw-results.json').read_text()))
-    rows = [clean_row(row) for row in rows]
-    for row in rows:
-        if row.get('animation') and args.dumps:
-            source = args.dumps.resolve() / row['animation']
-            destination = output / row['animation']
-            if source.is_file() and source.resolve().is_relative_to(args.dumps.resolve()):
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, destination)
-            else:
-                row.pop('animation', None)
-        elif row.get('animation'):
-            row.pop('animation', None)
+    rows = load_rows(args.dumps, args.prior_results)
+    copy_animations(rows, args.dumps, output)
     (output / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False) + '\n')
     shutil.copyfile(args.manifest, output / 'sample.json')
     report(rows, output)
