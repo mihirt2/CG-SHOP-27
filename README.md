@@ -146,11 +146,12 @@ are not committed.
   count. A stationary cutter is excluded from the ratio unless every cutter is
   stationary, in which case efficiency is undefined. Maximum route length
   remains the optimization objective and ranking metric.
-- Time and memory include interpreter/uv startup and output writing. On Linux
-  runners with cgroups, BenchExec measures the complete solver process tree;
-  otherwise the evaluator uses psutil to sample the process tree at 20 ms
-  intervals. Validation and GIF generation have separate timeouts and are
-  excluded from both measurements.
+- Time and memory include interpreter/uv startup and output writing. Linux
+  runners use BenchExec to measure the complete solver process tree. Other
+  platforms use psutil to sample the process tree at 20 ms intervals. A Linux
+  run without BenchExec measurements is reported as a measurement error rather
+  than silently switching monitors. Validation and GIF generation have separate
+  timeouts and are excluded from both measurements.
 - Invalid, missing, crashed, and timed-out solutions remain in the report and
   make the evaluator exit nonzero. Animation failure does not invalidate a solver.
 - The leaderboard ranks valid count first, then the mean of best valid length /

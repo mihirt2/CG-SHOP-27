@@ -67,15 +67,20 @@ def portable_run(command, timeout, log, cwd=None):
 
 
 def run(command, timeout, log, cwd=None):
-    """Use BenchExec when cgroups are available, otherwise use psutil."""
+    """Measure Linux runs with BenchExec and use psutil only off Linux."""
     if sys.platform != 'linux':
         return portable_run(command, timeout, log, cwd)
     from benchexec.runexecutor import RunExecutor
-    result = RunExecutor().execute_run(args=command, output_filename=str(log),
-                                       workingDir=str(cwd) if cwd else None,
-                                       walltimelimit=timeout, write_header=False)
+    try:
+        result = RunExecutor().execute_run(args=command, output_filename=str(log),
+                                           workingDir=str(cwd) if cwd else None,
+                                           walltimelimit=timeout, write_header=False)
+    except Exception as error:
+        with log.open('a') as stream:
+            stream.write(f'BenchExec failed to measure this run: {error}\n')
+        return {'status': 'measurement-error', 'time_s': None, 'memory_mib': None}
     if 'walltime' not in result:
-        return portable_run(command, timeout, log, cwd)
+        return {'status': 'measurement-error', 'time_s': None, 'memory_mib': None}
     exitcode, memory = result.get('exitcode'), result.get('memory')
     return {
         'status': 'timeout' if result.get('terminationreason') == 'walltime'
