@@ -1,0 +1,11 @@
+name: Solver benchmark helper
+description: Run one checked-in solver benchmark command.
+inputs:
+  command:
+    description: Command accepted by solver-benchmark.sh.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../../scripts/solver-benchmark.sh" "${{ inputs.command }}"
