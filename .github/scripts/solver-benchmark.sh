@@ -21,6 +21,7 @@ cache_key() {
     "$prefix/src/utils/pyproject.toml" \
     "$prefix/src/utils/uv.lock" \
     "$prefix/.github/scripts/solver-benchmark.sh" \
+    "$prefix/.github/actions/solver-benchmark/action.yml" \
     "$prefix/.github/workflows/solver-benchmark.yml" \
     | cut -d' ' -f1 | sha256sum | cut -d' ' -f1 > cache-key.txt
 }
