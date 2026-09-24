@@ -16,7 +16,7 @@ cache_key() {
   sha256sum "$manifest" \
     "$prefix/src/utils/benchmark-instances.py" \
     "$prefix/src/utils/benchmark-run.py" \
-    "$prefix/src/utils/benchmark-clean.py" \
+    "$prefix/src/utils/benchmark-report.py" \
     "$prefix/src/utils/benchmark-baseline.py" \
     "$prefix/src/utils/pyproject.toml" \
     "$prefix/src/utils/uv.lock" \
@@ -83,13 +83,13 @@ run_solvers() {
     --solver-root "$label=$root" "${args[@]}" --timeout 30 --animate --output "$output"
 }
 
-clean_report() {
+write_report() {
   local dumps=${1:-}
   local prior=()
   [ -f prior-results.json ] && prior=(--prior-results prior-results.json)
   local args=(--manifest benchmark-inputs/manifest.json "${prior[@]}" --output benchmark-results)
   [ -n "$dumps" ] && args=(--dumps "$dumps" "${args[@]}")
-  "$candidate_python" candidate/src/utils/benchmark-clean.py "${args[@]}"
+  "$candidate_python" candidate/src/utils/benchmark-report.py "${args[@]}"
 }
 
 publish_cache() {
@@ -107,14 +107,14 @@ case "${1:-}" in
   select-baseline) select_baseline ;;
   install-solvers) install_solvers ;;
   run-merged) run_solvers merged merged/src/solver missing.txt merged-dumps ;;
-  clean-merged)
-    "$candidate_python" candidate/src/utils/benchmark-clean.py --dumps merged-dumps \
+  report-merged)
+    "$candidate_python" candidate/src/utils/benchmark-report.py --dumps merged-dumps \
       --manifest benchmark-inputs/manifest.json --output merged-results
     cp merged-results/results.json prior-results.json
     ;;
   run-proposed) run_solvers candidate candidate/src/solver changed.txt benchmark-dumps ;;
-  clean-proposed) clean_report benchmark-dumps ;;
-  clean-empty) clean_report ;;
+  report-proposed) write_report benchmark-dumps ;;
+  report-empty) write_report ;;
   publish-cache) publish_cache ;;
-  *) echo "usage: $0 {fetch-inputs|cache-key-pr|find-changed|select-baseline|install-solvers|run-merged|clean-merged|run-proposed|clean-proposed|clean-empty|publish-cache}" >&2; exit 2 ;;
+  *) echo "usage: $0 {fetch-inputs|cache-key-pr|find-changed|select-baseline|install-solvers|run-merged|report-merged|run-proposed|report-proposed|report-empty|publish-cache}" >&2; exit 2 ;;
 esac

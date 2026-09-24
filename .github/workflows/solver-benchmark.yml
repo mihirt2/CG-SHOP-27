@@ -65,20 +65,20 @@ jobs:
         if: github.event_name == 'pull_request' && steps.cache.outputs.has-missing == 'true'
         continue-on-error: true
         run: bash candidate/.github/scripts/solver-benchmark.sh run-merged
-      - name: Clean merged cache misses
+      - name: Write merged baseline rows
         if: always() && github.event_name == 'pull_request' && steps.cache.outputs.has-missing == 'true'
-        run: bash candidate/.github/scripts/solver-benchmark.sh clean-merged
+        run: bash candidate/.github/scripts/solver-benchmark.sh report-merged
       - name: Run changed proposed solvers
         id: run-proposed
         if: steps.changes.outputs.changed != ''
         continue-on-error: true
         run: bash candidate/.github/scripts/solver-benchmark.sh run-proposed
-      - name: Clean changed proposed solvers
+      - name: Write proposed solver report
         if: always() && steps.changes.outputs.changed != ''
-        run: bash candidate/.github/scripts/solver-benchmark.sh clean-proposed
-      - name: Clean an empty or removed-only report
+        run: bash candidate/.github/scripts/solver-benchmark.sh report-proposed
+      - name: Write an empty or removed-only report
         if: always() && steps.changes.outputs.changed == ''
-        run: bash candidate/.github/scripts/solver-benchmark.sh clean-empty
+        run: bash candidate/.github/scripts/solver-benchmark.sh report-empty
       - name: Mark failed solver evaluations as failed
         if: always() && (steps.run-merged.outcome == 'failure' || steps.run-proposed.outcome == 'failure')
         run: exit 1

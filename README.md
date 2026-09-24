@@ -124,16 +124,14 @@ uv sync --frozen --project src/utils
 uv sync --frozen --project src/solver/py-bounding-rect-solver
 uv run --no-sync --project src/utils python src/utils/benchmark-instances.py src/examples/test_instances1 --output benchmark-inputs
 uv run --no-sync --project src/utils python src/utils/benchmark-run.py benchmark-inputs/instances --solver-root proposed=src/solver --timeout 30 --animate --output benchmark-dumps
-uv run --no-sync --project src/utils python src/utils/benchmark-clean.py --dumps benchmark-dumps --manifest benchmark-inputs/manifest.json --output benchmark-results
+uv run --no-sync --project src/utils python src/utils/benchmark-report.py --dumps benchmark-dumps --manifest benchmark-inputs/manifest.json --output benchmark-results
 ```
 
-Run these commands from the repository root. The three scripts are independent:
-the first creates a reproducible instance manifest, the second writes raw dumps,
-and the third produces portable cleaned artifacts. Open
-`benchmark-results/report.md` for the per-instance table. The fourth stage is
-the privileged GitHub Action that reads the cleaned artifact, publishes GIFs,
-and updates the PR comment. Generated reports, logs, solutions, and animations
-are not committed.
+Run these commands from the repository root. Each script has a single purpose:
+instance selection, solver measurement, or report generation. Open
+`benchmark-results/report.md` for the per-instance table. GitHub Actions reads
+the report artifact, publishes GIFs, and updates the PR comment. Generated
+reports, logs, solutions, and animations are not committed.
 
 - The default solver benchmark uses 15 fixed instances spanning multiple field
   sizes and families. `BENCHMARK_INSTANCES` names the exact files, and the

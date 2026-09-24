@@ -1,4 +1,4 @@
-"""Stage 3: turn raw benchmark dumps into safe, portable report artifacts."""
+"""Build portable benchmark report artifacts from measurements."""
 
 import argparse
 import json
@@ -14,20 +14,20 @@ PUBLIC_FIELDS = {
 }
 
 
-def clean_row(row):
+def public_row(row):
     if not isinstance(row, dict):
         raise ValueError('Every raw result must be an object')
-    clean = {key: value for key, value in row.items() if key in PUBLIC_FIELDS}
+    public = {key: value for key, value in row.items() if key in PUBLIC_FIELDS}
     for key in ('solver', 'instance', 'status'):
-        if not isinstance(clean.get(key), str):
+        if not isinstance(public.get(key), str):
             raise ValueError(f'Missing or invalid {key!r} in a raw result')
     for key in ('efficiency', 'max_len', 'time_s', 'memory_mib', 'swept_area', 'area'):
-        if key in clean and clean[key] is not None and (not isinstance(clean[key], (int, float)) or not math.isfinite(clean[key])):
-            clean[key] = None
-    animation = clean.get('animation')
+        if key in public and public[key] is not None and (not isinstance(public[key], (int, float)) or not math.isfinite(public[key])):
+            public[key] = None
+    animation = public.get('animation')
     if animation is not None and (not isinstance(animation, str) or not animation.startswith('run-') or not animation.endswith('/animation.gif')):
-        clean.pop('animation', None)
-    return clean
+        public.pop('animation', None)
+    return public
 
 
 def report(rows, output):
@@ -55,7 +55,7 @@ def load_rows(dumps, prior_results):
         rows.extend(json.loads(prior_results.read_text()))
     if dumps:
         rows.extend(json.loads((dumps.resolve() / 'raw-results.json').read_text()))
-    return [clean_row(row) for row in rows]
+    return [public_row(row) for row in rows]
 
 
 def copy_animations(rows, dumps, output):
@@ -75,8 +75,8 @@ def copy_animations(rows, dumps, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--dumps', type=Path, help='Stage-2 dump directory')
-    parser.add_argument('--prior-results', type=Path, help='Previously cleaned rows to retain')
+    parser.add_argument('--dumps', type=Path, help='Directory written by benchmark-run.py')
+    parser.add_argument('--prior-results', type=Path, help='Previously reported rows to retain')
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()

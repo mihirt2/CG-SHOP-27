@@ -1,4 +1,4 @@
-"""Stage 2: run solvers on prepared instances and write raw benchmark dumps."""
+"""Run solvers on benchmark instances and write measurements and diagnostics."""
 
 import argparse
 import json

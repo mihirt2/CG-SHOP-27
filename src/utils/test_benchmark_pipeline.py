@@ -19,22 +19,22 @@ def load_module(name):
     return module
 
 
-class BenchmarkPipelineTest(unittest.TestCase):
+class BenchmarkReportTest(unittest.TestCase):
     def test_stationary_cutter_is_excluded_from_weighted_area(self):
         runner = load_module('benchmark_run')
         self.assertEqual(runner.length_balanced_swept_area([7, 20], [0, 10]), 20)
         self.assertIsNone(runner.length_balanced_swept_area([7, 20], [0, 0]))
 
-    def test_cleanup_retains_a_failed_solver_row(self):
-        clean = load_module('benchmark_clean')
-        row = clean.clean_row({
+    def test_report_retains_a_failed_solver_row(self):
+        report = load_module('benchmark_report')
+        row = report.public_row({
             'solver': 'candidate/fails', 'instance': 'tiny', 'status': 'timeout',
             'time_s': 30.0, 'memory_mib': 12.0, 'private_log_path': '/secret',
         })
         self.assertEqual(row, {'solver': 'candidate/fails', 'instance': 'tiny',
                                'status': 'timeout', 'time_s': 30.0, 'memory_mib': 12.0})
 
-    def test_failed_solver_run_produces_a_cleaned_report(self):
+    def test_failed_solver_run_produces_a_report(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             instances, solver, dumps, report = (root / name for name in ('instances', 'solver', 'dumps', 'report'))
@@ -58,7 +58,7 @@ class BenchmarkPipelineTest(unittest.TestCase):
             self.assertNotEqual(failed.returncode, 0)
             manifest = root / 'manifest.json'
             manifest.write_text('[]\n')
-            subprocess.run([sys.executable, ROOT / 'benchmark-clean.py', '--dumps', dumps,
+            subprocess.run([sys.executable, ROOT / 'benchmark-report.py', '--dumps', dumps,
                             '--manifest', manifest, '--output', report], check=True)
             rows = json.loads((report / 'results.json').read_text())
             self.assertEqual(len(rows), 1)

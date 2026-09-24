@@ -1,4 +1,4 @@
-"""Stage 1: create a reproducible directory of benchmark instances."""
+"""Copy a reproducible set of benchmark instances and write its manifest."""
 
 import argparse
 import hashlib
